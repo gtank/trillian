@@ -25,18 +25,30 @@ import (
 
 	"github.com/google/btree"
 	"github.com/google/trillian"
-	"github.com/google/trillian/monitoring/metric"
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/trees"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 var (
 	defaultLogStrata = []int{8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8}
 
-	queuedCounter   = metric.NewCounter("mem_queued_leaves")
-	dequeuedCounter = metric.NewCounter("mem_dequeued_leaves")
+	queuedCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "mem_queued_leaves",
+		Help: "Number of leaves queued",
+	})
+	dequeuedCounter = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "mem_dequeued_leaves",
+		Help: "Number of leaves dequeued",
+	})
 )
+
+func init() {
+	// Register metrics so they get exposed.
+	prometheus.MustRegister(queuedCounter)
+	prometheus.MustRegister(dequeuedCounter)
+}
 
 func unseqKey(treeID int64) btree.Item {
 	return &kv{k: fmt.Sprintf("/%d/unseq", treeID)}

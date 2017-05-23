@@ -15,99 +15,127 @@
 package monitoring
 
 import (
-	"expvar"
 	"fmt"
 	"time"
 
 	"github.com/google/trillian/util"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
 const (
-	nanosToMillisDivisor int64 = 1000000
-
-	requestCountMapName            string = "requests-by-handler"
-	requestSucceededCountMapName   string = "success-by-handler"
-	requestErrorCountMapName       string = "errors-by-handler"
-	requestSucceededLatencyMapName string = "succeeded-request-total-latency-by-handler-ms"
-	requestFailedLatencyMapName    string = "failed-request-total-latency-by-handler-ms"
+	reqCountName          = "rpc_requests_total"
+	reqSuccessCountName   = "rpc_success_total"
+	reqSuccessLatencyName = "rpc_success_latency_ms"
+	reqErrorCountName     = "rpc_errors_total"
+	reqErrorLatencyName   = "rpc_errors_latency_ms"
+	methodName            = "method"
 )
 
 // RPCStatsInterceptor provides a gRPC interceptor that records statistics about the RPCs passing through it.
 type RPCStatsInterceptor struct {
-	baseName                          string
-	timeSource                        util.TimeSource
-	handlerRequestCountMap            *expvar.Map
-	handlerRequestSucceededCountMap   *expvar.Map
-	handlerRequestErrorCountMap       *expvar.Map
-	handlerRequestSucceededLatencyMap *expvar.Map
-	handlerRequestFailedLatencyMap    *expvar.Map
+	prefix            string
+	timeSource        util.TimeSource
+	reqCount          *prometheus.CounterVec
+	reqSuccessCount   *prometheus.CounterVec
+	reqSuccessLatency *prometheus.HistogramVec
+	reqErrorCount     *prometheus.CounterVec
+	reqErrorLatency   *prometheus.HistogramVec
 }
 
 // NewRPCStatsInterceptor creates a new RPCStatsInterceptor for the given application/component, with
 // a specified time source.
-func NewRPCStatsInterceptor(timeSource util.TimeSource, application, component string) *RPCStatsInterceptor {
-	return &RPCStatsInterceptor{baseName: fmt.Sprintf("%s/%s", application, component), timeSource: timeSource,
-		handlerRequestCountMap:            new(expvar.Map).Init(),
-		handlerRequestSucceededCountMap:   new(expvar.Map).Init(),
-		handlerRequestErrorCountMap:       new(expvar.Map).Init(),
-		handlerRequestSucceededLatencyMap: new(expvar.Map).Init(),
-		handlerRequestFailedLatencyMap:    new(expvar.Map).Init()}
+func NewRPCStatsInterceptor(timeSource util.TimeSource, prefix string) *RPCStatsInterceptor {
+	interceptor := RPCStatsInterceptor{
+		prefix:     prefix,
+		timeSource: timeSource,
+		reqCount: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefixedName(prefix, reqCountName),
+				Help: "Number of requests",
+			},
+			[]string{methodName},
+		),
+		reqSuccessCount: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefixedName(prefix, reqSuccessCountName),
+				Help: "Number of successful requests",
+			},
+			[]string{methodName},
+		),
+		reqSuccessLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name: prefixedName(prefix, reqSuccessLatencyName),
+				Help: "Latency of successful requests",
+			},
+			[]string{methodName},
+		),
+		reqErrorCount: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: prefixedName(prefix, reqErrorCountName),
+				Help: "Number of errored requests",
+			},
+			[]string{methodName},
+		),
+		reqErrorLatency: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name: prefixedName(prefix, reqErrorLatencyName),
+				Help: "Latency of errored requests",
+			},
+			[]string{methodName},
+		),
+	}
+	prometheus.MustRegister(interceptor.reqCount)
+	prometheus.MustRegister(interceptor.reqSuccessCount)
+	prometheus.MustRegister(interceptor.reqSuccessLatency)
+	prometheus.MustRegister(interceptor.reqErrorCount)
+	prometheus.MustRegister(interceptor.reqErrorLatency)
+	return &interceptor
 }
 
-func (r RPCStatsInterceptor) nameForMap(name string) string {
-	return fmt.Sprintf("%s/%s", r.baseName, name)
+func prefixedName(prefix, name string) string {
+	return fmt.Sprintf("%s_%s", prefix, name)
 }
 
-// Publish must be called for stats to be visible. The expvar framework will prevent
-// multiple calls to Publish from succeeding.
-func (r RPCStatsInterceptor) Publish() {
-	expvar.Publish(r.nameForMap(requestCountMapName), r.handlerRequestCountMap)
-	expvar.Publish(r.nameForMap(requestSucceededCountMapName), r.handlerRequestSucceededCountMap)
-	expvar.Publish(r.nameForMap(requestErrorCountMapName), r.handlerRequestErrorCountMap)
-	expvar.Publish(r.nameForMap(requestSucceededLatencyMapName), r.handlerRequestSucceededLatencyMap)
-	expvar.Publish(r.nameForMap(requestFailedLatencyMapName), r.handlerRequestFailedLatencyMap)
-}
-
-func (r RPCStatsInterceptor) recordFailureLatency(method string, startTime time.Time) {
+func (r *RPCStatsInterceptor) recordFailureLatency(labels prometheus.Labels, startTime time.Time) {
 	latency := r.timeSource.Now().Sub(startTime)
-	r.handlerRequestErrorCountMap.Add(method, 1)
-	r.handlerRequestFailedLatencyMap.Add(method, latency.Nanoseconds()/nanosToMillisDivisor)
+	r.reqErrorCount.With(labels).Inc()
+	r.reqErrorLatency.With(labels).Observe(float64(latency.Nanoseconds() / int64(time.Millisecond)))
 }
 
 // Interceptor returns a UnaryServerInterceptor that can be registered with an RPC server and
 // will record request counts / errors and latencies for that servers handlers
-func (r RPCStatsInterceptor) Interceptor() grpc.UnaryServerInterceptor {
+func (r *RPCStatsInterceptor) Interceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		method := info.FullMethod
+		labels := prometheus.Labels{methodName: method}
 
 		// Increase the request count for the method and start the clock
-		r.handlerRequestCountMap.Add(method, 1)
+		r.reqCount.With(labels).Inc()
 		startTime := r.timeSource.Now()
 
 		defer func() {
 			if rec := recover(); rec != nil {
 				// If we reach here then the handler exited via panic, count it as a server failure
-				r.recordFailureLatency(method, startTime)
+				r.recordFailureLatency(labels, startTime)
 				panic(rec)
 			}
 		}()
 
 		// Invoke the actual operation
-		res, err := handler(ctx, req)
+		rsp, err := handler(ctx, req)
 
 		// Record success / failure and latency
 		if err != nil {
-			r.recordFailureLatency(method, startTime)
+			r.recordFailureLatency(labels, startTime)
 		} else {
 			latency := r.timeSource.Now().Sub(startTime)
-
-			r.handlerRequestSucceededCountMap.Add(method, 1)
-			r.handlerRequestSucceededLatencyMap.Add(method, latency.Nanoseconds()/nanosToMillisDivisor)
+			r.reqSuccessCount.With(labels).Inc()
+			r.reqSuccessLatency.With(labels).Observe(float64(latency.Nanoseconds() / int64(time.Millisecond)))
 		}
 
 		// Pass the result of the handler invocation back
-		return res, err
+		return rsp, err
 	}
 }
