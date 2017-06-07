@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Shopify/sarama"
+	"github.com/golang/protobuf/proto"
 	"github.com/google/btree"
 	"github.com/google/trillian"
 	"github.com/google/trillian/monitoring"
@@ -75,9 +77,9 @@ type memoryLogStorage struct {
 }
 
 // NewLogStorage creates an in-memory LogStorage instance.
-func NewLogStorage() storage.LogStorage {
+func NewLogStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer) storage.LogStorage {
 	ret := &memoryLogStorage{
-		memoryTreeStorage: newTreeStorage(),
+		memoryTreeStorage: newTreeStorage(kafkaProd, kafkaCons),
 	}
 	ret.admin = NewAdminStorage(ret)
 	return ret
@@ -191,12 +193,23 @@ func (t *logTreeTX) WriteRevision() int64 {
 func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime time.Time) ([]*trillian.LogLeaf, error) {
 	leaves := make([]*trillian.LogLeaf, 0, limit)
 
-	q := t.tx.Get(unseqKey(t.treeID)).(*kv).v.(*list.List)
-	e := q.Front()
-	for i := 0; i < limit && e != nil; i++ {
-		// TODO(al): consider cutoffTime
-		leaves = append(leaves, e.Value.(*trillian.LogLeaf))
-		e = e.Next()
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	p := c.Messages()
+	for i := 0; i < limit; i++ {
+		// TODO(filippo): consider cutoffTime
+		msg, ok := <-p
+		if !ok {
+			break
+		}
+		leaf := &trillian.LogLeaf{}
+		err = proto.Unmarshal(msg.Value, leaf)
+		if err != nil {
+			return nil, err
+		}
+		leaves = append(leaves, leaf)
 	}
 
 	dequeuedCounter.Add(float64(len(leaves)), labelForTX(t))
@@ -212,10 +225,19 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 	}
 	queuedCounter.Add(float64(len(leaves)), labelForTX(t))
 	// No deduping in this storage!
-	k := unseqKey(t.treeID)
-	q := t.tx.Get(k).(*kv).v.(*list.List)
 	for _, l := range leaves {
-		q.PushBack(l)
+		encoded, err := proto.Marshal(l)
+		if err != nil {
+			return nil, err
+		}
+		// TODO(filippo): batch send, annotate errors
+		_, _, err = t.ls.kafkaProd.SendMessage(&sarama.ProducerMessage{
+			Topic: strconv.FormatInt(t.treeID, 10),
+			Value: sarama.ByteEncoder(encoded),
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return []*trillian.LogLeaf{}, nil
 }
@@ -324,6 +346,7 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 	}
 
 	if unknown := len(countByMerkleHash); unknown != 0 {
+		panic("flag")
 		return fmt.Errorf("attempted to update %d unknown leaves: %x", unknown, countByMerkleHash)
 	}
 

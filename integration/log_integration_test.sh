@@ -16,7 +16,6 @@ echo "Provision log"
 go build ${GOFLAGS} github.com/google/trillian/cmd/createtree/
 TEST_TREE_ID=$(./createtree \
   --admin_server="${RPC_SERVER_1}" \
-  --pem_key_path=testdata/log-rpc-server.privkey.pem \
   --pem_key_path=${GOPATH}/src/github.com/google/trillian/testdata/log-rpc-server.privkey.pem \
   --pem_key_password=towel \
   --signature_algorithm=ECDSA)

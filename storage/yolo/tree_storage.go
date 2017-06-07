@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Shopify/sarama"
 	"github.com/golang/glog"
 	"github.com/google/btree"
 	"github.com/google/trillian"
@@ -71,13 +72,17 @@ func Dump(t *btree.BTree) {
 // memoryTreeStorage is shared between the memoryLog and (forthcoming) memoryMap-
 // Storage implementations, and contains functionality which is common to both,
 type memoryTreeStorage struct {
-	mu    sync.RWMutex
-	trees map[int64]*tree
+	mu        sync.RWMutex
+	trees     map[int64]*tree
+	kafkaProd sarama.SyncProducer
+	kafkaCons sarama.Consumer
 }
 
-func newTreeStorage() *memoryTreeStorage {
+func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer) *memoryTreeStorage {
 	return &memoryTreeStorage{
-		trees: make(map[int64]*tree),
+		trees:     make(map[int64]*tree),
+		kafkaProd: kafkaProd,
+		kafkaCons: kafkaCons,
 	}
 }
 
