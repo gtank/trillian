@@ -38,11 +38,11 @@ func subtreeKey(treeID, rev int64, nodeID storage.NodeID) btree.Item {
 
 // tree stores all data for a given treeID
 type tree struct {
-	mu    sync.RWMutex
-	store *btree.BTree
-	// currentSTH is the timestamp of the current STH.
-	currentSTH int64
-	meta       *trillian.Tree
+	mu          sync.RWMutex
+	store       *btree.BTree
+	currentSTH  int64 // currentSTH is the timestamp of the current STH.
+	meta        *trillian.Tree
+	kafkaOffset int64 // TODO(filippo): probably belongs on a tx?
 }
 
 func (t *tree) Lock() {

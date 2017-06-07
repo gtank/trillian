@@ -2,8 +2,6 @@ package yolo_test
 
 import (
 	"context"
-	"errors"
-	"strconv"
 	"sync"
 	"testing"
 
@@ -49,7 +47,6 @@ func TestLogIntegration(t *testing.T) {
 		t.Fatalf("Failed to create log: %v", err)
 	}
 
-	consumer.name = strconv.FormatInt(logID, 10)
 	for i := 0; i < 1000; i++ {
 		producer.ExpectSendMessageWithCheckerFunctionAndSucceed(
 			mocks.ValueChecker(consumer.addMessage))
@@ -68,6 +65,11 @@ type consumerMock struct {
 	topic [][]byte
 }
 
+type partConsMock struct {
+	cm     *consumerMock
+	offset int64
+}
+
 func (c *consumerMock) addMessage(val []byte) error {
 	c.Lock()
 	defer c.Unlock()
@@ -79,28 +81,33 @@ func (*consumerMock) Topics() ([]string, error)                  { panic("unimpl
 func (*consumerMock) Partitions(topic string) ([]int32, error)   { panic("unimplemented") }
 func (*consumerMock) HighWaterMarks() map[string]map[int32]int64 { panic("unimplemented") }
 func (*consumerMock) Close() error                               { return nil }
-func (*consumerMock) AsyncClose()                                { return }
-func (*consumerMock) HighWaterMarkOffset() int64                 { panic("unimplemented") }
-func (*consumerMock) Errors() <-chan *sarama.ConsumerError       { panic("unimplemented") }
+
+func (partConsMock) Close() error                         { return nil }
+func (partConsMock) AsyncClose()                          { return }
+func (partConsMock) HighWaterMarkOffset() int64           { panic("unimplemented") }
+func (partConsMock) Errors() <-chan *sarama.ConsumerError { panic("unimplemented") }
 
 func (c *consumerMock) ConsumePartition(topic string, partition int32, offset int64) (
 	sarama.PartitionConsumer, error) {
-	if topic != c.name || partition != 0 || offset != 0 {
-		return nil, errors.New("consumerMock: invalid ConsumePartition call")
+	if c.name == "" {
+		c.name = topic
 	}
-	return c, nil
+	if topic != c.name || partition != 0 {
+		panic("consumerMock: invalid ConsumePartition call")
+	}
+	return partConsMock{c, offset}, nil
 }
 
-func (cm *consumerMock) Messages() <-chan *sarama.ConsumerMessage {
+func (p partConsMock) Messages() <-chan *sarama.ConsumerMessage {
 	c := make(chan *sarama.ConsumerMessage)
 	go func() {
-		cm.RLock()
-		topic := cm.topic
-		cm.RUnlock()
-		for offset, val := range topic {
+		p.cm.RLock()
+		topic := p.cm.topic
+		p.cm.RUnlock()
+		for offset, val := range topic[p.offset:] {
 			c <- &sarama.ConsumerMessage{
 				Value:     val,
-				Topic:     cm.name,
+				Topic:     p.cm.name,
 				Partition: 0,
 				Offset:    int64(offset),
 			}

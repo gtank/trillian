@@ -16,7 +16,6 @@ package yolo
 
 import (
 	"bytes"
-	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -193,10 +192,11 @@ func (t *logTreeTX) WriteRevision() int64 {
 func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime time.Time) ([]*trillian.LogLeaf, error) {
 	leaves := make([]*trillian.LogLeaf, 0, limit)
 
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, 0)
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, t.tree.kafkaOffset)
 	if err != nil {
 		return nil, err
 	}
+	defer c.Close()
 	p := c.Messages()
 	for i := 0; i < limit; i++ {
 		// TODO(filippo): consider cutoffTime
@@ -328,21 +328,29 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		m.(*kv).v.(map[string][]int64)[string(leaf.MerkleLeafHash)] = l
 	}
 
-	q := t.tx.Get(unseqKey(t.treeID)).(*kv).v.(*list.List)
-	toRemove := make([]*list.Element, 0, q.Len())
-	for e := q.Front(); e != nil && len(countByMerkleHash) > 0; e = e.Next() {
-		h := e.Value.(*trillian.LogLeaf).MerkleLeafHash
-		mh := string(h)
-		if countByMerkleHash[mh] > 0 {
-			countByMerkleHash[mh]--
-			toRemove = append(toRemove, e)
-			if countByMerkleHash[mh] == 0 {
-				delete(countByMerkleHash, mh)
-			}
-		}
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, t.tree.kafkaOffset)
+	defer c.Close()
+	if err != nil {
+		return err
 	}
-	for _, e := range toRemove {
-		q.Remove(e)
+	for msg := range c.Messages() {
+		leaf := &trillian.LogLeaf{}
+		err = proto.Unmarshal(msg.Value, leaf)
+		if err != nil {
+			return err
+		}
+		mh := string(leaf.MerkleLeafHash)
+		if countByMerkleHash[mh] == 0 {
+			panic("flag")
+			return errors.New("tried to dequeue non-contiguous leaves")
+		}
+		countByMerkleHash[mh]--
+		if countByMerkleHash[mh] == 0 {
+			delete(countByMerkleHash, mh)
+		}
+		if len(countByMerkleHash) == 0 {
+			break
+		}
 	}
 
 	if unknown := len(countByMerkleHash); unknown != 0 {
@@ -350,6 +358,7 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return fmt.Errorf("attempted to update %d unknown leaves: %x", unknown, countByMerkleHash)
 	}
 
+	t.tree.kafkaOffset += int64(len(leaves))
 	return nil
 }
 
