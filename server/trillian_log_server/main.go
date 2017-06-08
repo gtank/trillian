@@ -20,9 +20,10 @@ import (
 	"context"
 	"flag"
 	_ "net/http/pprof"
+	"os"
+	"strings"
 
-	_ "github.com/go-sql-driver/mysql" // Load MySQL driver
-
+	"github.com/Shopify/sarama"
 	"github.com/golang/glog"
 	"github.com/google/trillian"
 	"github.com/google/trillian/cmd"
@@ -30,23 +31,25 @@ import (
 	"github.com/google/trillian/extension"
 	"github.com/google/trillian/monitoring"
 	"github.com/google/trillian/monitoring/prometheus"
-	mysqlq "github.com/google/trillian/quota/mysql"
+	"github.com/google/trillian/quota"
 	"github.com/google/trillian/server"
 	"github.com/google/trillian/server/interceptor"
-	"github.com/google/trillian/storage/mysql"
+	"github.com/google/trillian/storage/yolo"
 	"github.com/google/trillian/util"
 	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/tsuna/gohbase"
 	"google.golang.org/grpc"
 )
 
 var (
-	mySQLURI           = flag.String("mysql_uri", "test:zaphod@tcp(127.0.0.1:3306)/test", "Connection URI for MySQL database")
-	rpcEndpoint        = flag.String("rpc_endpoint", "localhost:8090", "Endpoint for RPC requests (host:port)")
-	httpEndpoint       = flag.String("http_endpoint", "localhost:8091", "Endpoint for HTTP metrics and REST requests on (host:port, empty means disabled)")
-	etcdServers        = flag.String("etcd_servers", "", "A comma-separated list of etcd servers; no etcd registration if empty")
-	etcdService        = flag.String("etcd_service", "trillian-logserver", "Service name to announce ourselves under")
-	etcdHTTPService    = flag.String("etcd_http_service", "trillian-logserver-http", "Service name to announce our HTTP endpoint under")
-	maxUnsequencedRows = flag.Int("max_unsequenced_rows", mysqlq.DefaultMaxUnsequenced, "Max number of unsequenced rows before rate limiting kicks in")
+	brokers      = flag.String("brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
+	hbaseHost    = flag.String("hbase", "", "The HBase host to connect to")
+	rpcEndpoint  = flag.String("rpc_endpoint", "localhost:8090", "Endpoint for RPC requests (host:port)")
+	httpEndpoint = flag.String("http_endpoint", "localhost:8091", "Endpoint for HTTP metrics and REST requests on (host:port, empty means disabled)")
+
+	etcdServers     = flag.String("etcd_servers", "", "A comma-separated list of etcd servers; no etcd registration if empty")
+	etcdService     = flag.String("etcd_service", "trillian-logserver", "Service name to announce ourselves under")
+	etcdHTTPService = flag.String("etcd_http_service", "trillian-logserver-http", "Service name to announce our HTTP endpoint under")
 
 	configFile = flag.String("config", "", "Config file containing flags, file contents can be overridden by command line flags")
 )
@@ -62,12 +65,27 @@ func main() {
 
 	ctx := context.Background()
 
-	// First make sure we can access the database, quit if not
-	db, err := mysql.OpenDB(*mySQLURI)
-	if err != nil {
-		glog.Exitf("Failed to open database: %v", err)
+	if *brokers == "" {
+		glog.Exit("Need to specify Kafka brokers")
 	}
-	// No defer: database ownership is delegated to server.Main
+	brokerList := strings.Split(*brokers, ",")
+	config := sarama.NewConfig()
+	config.Producer.RequiredAcks = sarama.WaitForAll // Wait for all in-sync replicas to ack the message
+	config.Producer.Retry.Max = 10                   // Retry up to 10 times to produce the message
+	config.Producer.Return.Successes = true
+	producer, err := sarama.NewSyncProducer(brokerList, config)
+	if err != nil {
+		glog.Exit("Error starting Kafka producer:", err)
+	}
+	consumer, err := sarama.NewConsumer(brokerList, nil)
+	if err != nil {
+		glog.Exit("Error starting Kafka consumer:", err)
+	}
+
+	if *hbaseHost == "" {
+		glog.Exit("Need to specify hbase host")
+	}
+	hbaseClient := gohbase.NewClient(*hbaseHost)
 
 	// Announce our endpoints to etcd if so configured.
 	unannounce := server.AnnounceSelf(ctx, *etcdServers, *etcdService, *rpcEndpoint)
@@ -81,11 +99,12 @@ func main() {
 		}
 	}
 
+	st := yolo.NewLogStorage(producer, consumer, hbaseClient)
 	registry := extension.Registry{
-		AdminStorage:  mysql.NewAdminStorage(db),
+		AdminStorage:  yolo.NewAdminStorage(st),
 		SignerFactory: keys.PEMSignerFactory{},
-		LogStorage:    mysql.NewLogStorage(db),
-		QuotaManager:  &mysqlq.QuotaManager{DB: db, MaxUnsequencedRows: *maxUnsequencedRows},
+		LogStorage:    st,
+		QuotaManager:  quota.Noop(), // TODO
 		MetricFactory: prometheus.MetricFactory{},
 	}
 
@@ -102,7 +121,6 @@ func main() {
 	m := server.Main{
 		RPCEndpoint:  *rpcEndpoint,
 		HTTPEndpoint: *httpEndpoint,
-		DB:           db,
 		Registry:     registry,
 		Server:       s,
 		RegisterHandlerFn: func(context.Context, *runtime.ServeMux, string, []grpc.DialOption) error {

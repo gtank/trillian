@@ -16,7 +16,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"net"
 	"net/http"
 	"strings"
@@ -41,7 +40,6 @@ type Main struct {
 	// Endpoints for RPC and HTTP/REST servers.
 	// HTTP/REST is optional, if empty it'll not be bound.
 	RPCEndpoint, HTTPEndpoint string
-	DB                        *sql.DB
 	Registry                  extension.Registry
 	Server                    *grpc.Server
 	// RegisterHandlerFn is called to register REST-proxy handlers.
@@ -55,7 +53,6 @@ func (m *Main) Run(ctx context.Context) error {
 	glog.CopyStandardLogTo("WARNING")
 
 	defer m.Server.GracefulStop()
-	defer m.DB.Close()
 
 	if err := m.RegisterServerFn(m.Server, m.Registry); err != nil {
 		return err

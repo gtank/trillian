@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql" // Load MySQL driver
+	"github.com/Shopify/sarama"
 	"github.com/golang/glog"
 	"github.com/google/trillian/cmd"
 	"github.com/google/trillian/crypto/keys"
@@ -30,15 +31,17 @@ import (
 	"github.com/google/trillian/monitoring/prometheus"
 	"github.com/google/trillian/quota"
 	"github.com/google/trillian/server"
-	"github.com/google/trillian/storage/mysql"
+	"github.com/google/trillian/storage/yolo"
 	"github.com/google/trillian/util"
 	"github.com/google/trillian/util/etcd"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/tsuna/gohbase"
 	"golang.org/x/net/context"
 )
 
 var (
-	mySQLURI                 = flag.String("mysql_uri", "test:zaphod@tcp(127.0.0.1:3306)/test", "Connection URI for MySQL database")
+	brokers                  = flag.String("brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
+	hbaseHost                = flag.String("hbase", "", "The HBase host to connect to")
 	httpEndpoint             = flag.String("http_endpoint", "localhost:8091", "Endpoint for HTTP (host:port, empty means disabled)")
 	sequencerIntervalFlag    = flag.Duration("sequencer_interval", time.Second*10, "Time between each sequencing pass through all logs")
 	batchSizeFlag            = flag.Int("batch_size", 50, "Max number of leaves to process per batch")
@@ -69,12 +72,27 @@ func main() {
 	glog.CopyStandardLogTo("WARNING")
 	glog.Info("**** Log Signer Starting ****")
 
-	// First make sure we can access the database, quit if not
-	db, err := mysql.OpenDB(*mySQLURI)
-	if err != nil {
-		glog.Exitf("Failed to open MySQL database: %v", err)
+	if *brokers == "" {
+		glog.Exit("Need to specify Kafka brokers")
 	}
-	defer db.Close()
+	brokerList := strings.Split(*brokers, ",")
+	config := sarama.NewConfig()
+	config.Producer.RequiredAcks = sarama.WaitForAll // Wait for all in-sync replicas to ack the message
+	config.Producer.Retry.Max = 10                   // Retry up to 10 times to produce the message
+	config.Producer.Return.Successes = true
+	producer, err := sarama.NewSyncProducer(brokerList, config)
+	if err != nil {
+		glog.Exit("Error starting Kafka producer:", err)
+	}
+	consumer, err := sarama.NewConsumer(brokerList, nil)
+	if err != nil {
+		glog.Exit("Error starting Kafka consumer:", err)
+	}
+
+	if *hbaseHost == "" {
+		glog.Exit("Need to specify hbase host")
+	}
+	hbaseClient := gohbase.NewClient(*hbaseHost)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go util.AwaitSignal(cancel)
@@ -89,10 +107,11 @@ func main() {
 		electionFactory = etcd.NewElectionFactory(instanceID, *etcdServers, *lockDir)
 	}
 
+	st := yolo.NewLogStorage(producer, consumer, hbaseClient)
 	registry := extension.Registry{
-		AdminStorage:    mysql.NewAdminStorage(db),
+		AdminStorage:    yolo.NewAdminStorage(st),
 		SignerFactory:   keys.PEMSignerFactory{},
-		LogStorage:      mysql.NewLogStorage(db),
+		LogStorage:      st,
 		ElectionFactory: electionFactory,
 		QuotaManager:    quota.Noop(),
 		MetricFactory:   prometheus.MetricFactory{},

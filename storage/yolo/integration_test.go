@@ -15,6 +15,8 @@ import (
 	"github.com/google/trillian/testonly/integration"
 )
 
+// go test -v ./storage/yolo -logtostderr -stderrthreshold INFO
+
 func TestLogIntegration(t *testing.T) {
 	ctx := context.Background()
 	const numSequencers = 2
