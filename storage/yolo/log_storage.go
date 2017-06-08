@@ -306,14 +306,14 @@ func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot
 	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, t.tree.currentSTH).(*kv).k, "raw", "bytes")
 	if err != nil {
 		// TODO YOLO
-		return trillian.SignedLogRoot{}, nil
+		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
 	}
 
 	var root trillian.SignedLogRoot
 	err = proto.Unmarshal(r.v.([]byte), &root)
 	if err != nil {
 		// TODO YOLO
-		return trillian.SignedLogRoot{}, nil
+		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
 	}
 
 	return root, nil
@@ -337,7 +337,6 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 }
 
 func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillian.LogLeaf) error {
-	fmt.Println("UpdateSequencedLeaves")
 	countByMerkleHash := make(map[string]int)
 	for _, leaf := range leaves {
 		// This should fail on insert but catch it early
@@ -348,9 +347,12 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		countByMerkleHash[mh]++
 		// insert sequenced leaf:
 		k := seqLeafKey(t.treeID, leaf.LeafIndex)
-		k.(*kv).v = leaf
-
-		t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", k.(*kv).v.([]byte))
+		// k.(*kv).v = leaf
+		encoded, err := proto.Marshal(leaf)
+		if err != nil {
+			return err
+		}
+		t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
 
 		// update merkle-to-seq mapping:
 		key := hashToSeqKey(t.treeID).(*kv).k

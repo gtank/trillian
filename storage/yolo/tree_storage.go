@@ -16,6 +16,7 @@ package yolo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -113,18 +114,18 @@ func (cts *commitTreeStorage) newTree(t trillian.Tree) *tree {
 	}
 
 	// we don't need to initialize these
-
 	// k := unseqKey(t.TreeId)
 	// k.(*kv).v = list.New()
 	// ret.store.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes",
 
-	// k := hashToSeqKey(t.TreeId)
-	// k.(*kv).v = make(map[string][]int64, 1)
+	k := hashToSeqKey(t.TreeId)
+	k.(*kv).v = make(map[string][]int64, 1)
 
-	// var treeIDMapBytes []byte
-	// treeIDMapBytes, _ = json.Marshal(k.(*kv).v)
+	var treeIDMapBytes []byte
+	treeIDMapBytes, _ = json.Marshal(k.(*kv).v)
 
-	// ret.store.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", treeIDMapBytes)
+	ret.store.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", treeIDMapBytes)
+	ret.store.Flush()
 
 	return ret
 }

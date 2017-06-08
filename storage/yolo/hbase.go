@@ -47,7 +47,6 @@ func (t *hbaseClient) bufferWrite(table, row string, values map[string]map[strin
 }
 
 func (t *hbaseClient) Flush() error {
-	fmt.Printf("Commit()\n")
 	t.RLock()
 	for _, op := range t.buffer {
 		req, err := hrpc.NewPutStr(context.Background(), op.table, op.row, op.values)
@@ -119,7 +118,7 @@ type MockClient struct {
 
 func NewMockClient(zkquorum string, options ...gohbase.Option) MockClient {
 	return MockClient{
-		tables: make(map[string]map[string]*hrpc.Result, 10),
+		tables: make(map[string]map[string]*hrpc.Result, 1),
 	}
 }
 
@@ -127,6 +126,9 @@ func (m MockClient) Get(g *hrpc.Get) (*hrpc.Result, error) {
 	table := string(g.Table())
 	row := string(g.Key())
 	m.RLock()
+	if m.tables[table] == nil {
+		m.tables[table] = make(map[string]*hrpc.Result)
+	}
 	result := m.tables[table][row]
 	m.RUnlock()
 	if result != nil {
@@ -151,6 +153,9 @@ func (m MockClient) Put(p *hrpc.Mutate) (*hrpc.Result, error) {
 	}
 
 	m.Lock()
+	if m.tables[table] == nil {
+		m.tables[table] = make(map[string]*hrpc.Result)
+	}
 	m.tables[table][row] = result
 	m.Unlock()
 
