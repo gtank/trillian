@@ -23,6 +23,9 @@ type hbaseWriteOp struct {
 	values map[string]map[string][]byte
 }
 
+// the RPC format makes it hard to mock the HBase client. let's cheat
+var yolo_values map[string]map[string][]byte
+
 func newHBaseClient(client gohbase.Client) *hbaseClient {
 	return &hbaseClient{
 		client: client,
@@ -44,6 +47,7 @@ func (t *hbaseClient) bufferWrite(table, row string, values map[string]map[strin
 }
 
 func (t *hbaseClient) Flush() error {
+	fmt.Printf("Commit()\n")
 	t.RLock()
 	for _, op := range t.buffer {
 		req, err := hrpc.NewPutStr(context.Background(), op.table, op.row, op.values)
@@ -51,6 +55,8 @@ func (t *hbaseClient) Flush() error {
 			t.RUnlock()
 			return err
 		}
+		//TODO(gtank): remove this awful debug hack
+		yolo_values = op.values
 		_, err = t.client.Put(req)
 		if err != nil {
 			t.RUnlock()
@@ -71,6 +77,7 @@ func (t *hbaseClient) Reset() {
 }
 
 func (c *hbaseClient) QualifiedGet(table, row, family, qualifier string) (*kv, error) {
+	// fmt.Printf("Get: %s[%s] -> %s:%s\n", table, row, family, qualifier)
 	req, err := hrpc.NewGet(context.Background(), []byte(table), []byte(row))
 	if err != nil {
 		return nil, err
@@ -95,7 +102,9 @@ func (c *hbaseClient) QualifiedGet(table, row, family, qualifier string) (*kv, e
 }
 
 func (t *hbaseClient) BufferedPut(table, row, family, qualifier string, value []byte) {
+	// fmt.Printf("Put: %s[%s] -> %s:%s\n", table, row, family, qualifier)
 	values := make(map[string]map[string][]byte)
+	values[family] = make(map[string][]byte)
 	values[family][qualifier] = value
 	t.bufferWrite(table, row, values)
 }
@@ -103,26 +112,56 @@ func (t *hbaseClient) BufferedPut(table, row, family, qualifier string, value []
 // mockClient implements gohbase.Client for testing
 type MockClient struct {
 	sync.RWMutex
-	tables   map[string]map[string]hrpc.Result
+	tables   map[string]map[string]*hrpc.Result
 	zkquorum string
 	options  []gohbase.Option
 }
 
 func NewMockClient(zkquorum string, options ...gohbase.Option) MockClient {
 	return MockClient{
-		tables:   make(map[string]map[string]hrpc.Result),
-		zkquorum: zkquorum,
-		options:  options,
+		tables: make(map[string]map[string]*hrpc.Result, 10),
 	}
 }
 
-func (m MockClient) Scan(s *hrpc.Scan) hrpc.Scanner              { panic("not implemented") }
-func (m MockClient) Get(g *hrpc.Get) (*hrpc.Result, error)       { panic("not implemented") }
-func (m MockClient) Put(p *hrpc.Mutate) (*hrpc.Result, error)    { panic("not implemented") }
-func (m MockClient) Delete(d *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
-func (m MockClient) Append(a *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
-func (m MockClient) Increment(i *hrpc.Mutate) (int64, error)     { panic("not implemented") }
+func (m MockClient) Get(g *hrpc.Get) (*hrpc.Result, error) {
+	table := string(g.Table())
+	row := string(g.Key())
+	m.RLock()
+	result := m.tables[table][row]
+	m.RUnlock()
+	if result != nil {
+		return result, nil
+	}
+	return nil, errors.New("key does not exist: " + row)
+}
+
+func (m MockClient) Put(p *hrpc.Mutate) (*hrpc.Result, error) {
+	table := string(p.Table())
+	row := string(p.Key())
+
+	// TODO mock general requests
+	cell := &hrpc.Cell{
+		Row:       p.Key(),
+		Family:    []byte("raw"),
+		Qualifier: []byte("bytes"),
+		Value:     yolo_values["raw"]["bytes"],
+	}
+	result := &hrpc.Result{
+		Cells: []*hrpc.Cell{cell},
+	}
+
+	m.Lock()
+	m.tables[table][row] = result
+	m.Unlock()
+
+	return result, nil
+}
+
+func (m MockClient) Scan(s *hrpc.Scan) hrpc.Scanner              { panic("Scan not implemented") }
+func (m MockClient) Delete(d *hrpc.Mutate) (*hrpc.Result, error) { panic("Delete not implemented") }
+func (m MockClient) Append(a *hrpc.Mutate) (*hrpc.Result, error) { panic("Append not implemented") }
+func (m MockClient) Increment(i *hrpc.Mutate) (int64, error)     { panic("Incrememt not implemented") }
 func (m MockClient) CheckAndPut(p *hrpc.Mutate, family string, qualifier string, expectedValue []byte) (bool, error) {
-	panic("not implemented")
+	panic("CheckAndPut not implemented")
 }
 func (m MockClient) Close() { return }

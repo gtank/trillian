@@ -251,7 +251,7 @@ func (t *logTreeTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
 	// 	return false
 	// })
 	// return sequencedLeafCount, nil
-	return t.ls.trees[t.treeID].kafkaOffset + 1, nil
+	return t.ls.trees[t.treeID].kafkaOffset, nil
 }
 
 func (t *logTreeTX) GetLeavesByIndex(ctx context.Context, leaves []int64) ([]*trillian.LogLeaf, error) {
@@ -305,13 +305,15 @@ func (t *logTreeTX) LatestSignedLogRoot(ctx context.Context) (trillian.SignedLog
 func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot, error) {
 	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, t.tree.currentSTH).(*kv).k, "raw", "bytes")
 	if err != nil {
-		return trillian.SignedLogRoot{}, err
+		// TODO YOLO
+		return trillian.SignedLogRoot{}, nil
 	}
 
 	var root trillian.SignedLogRoot
 	err = proto.Unmarshal(r.v.([]byte), &root)
 	if err != nil {
-		return trillian.SignedLogRoot{}, err
+		// TODO YOLO
+		return trillian.SignedLogRoot{}, nil
 	}
 
 	return root, nil
@@ -335,6 +337,7 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 }
 
 func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillian.LogLeaf) error {
+	fmt.Println("UpdateSequencedLeaves")
 	countByMerkleHash := make(map[string]int)
 	for _, leaf := range leaves {
 		// This should fail on insert but catch it early
