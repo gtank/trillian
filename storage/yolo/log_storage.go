@@ -17,9 +17,9 @@ package yolo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -33,6 +33,7 @@ import (
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/trees"
+	"github.com/tsuna/gohbase"
 )
 
 const logIDLabel = "logid"
@@ -46,8 +47,8 @@ var (
 )
 
 func createMetrics(mf monitoring.MetricFactory) {
-	queuedCounter = mf.NewCounter("mem_queued_leaves", "Number of leaves queued", logIDLabel)
-	dequeuedCounter = mf.NewCounter("mem_dequeued_leaves", "Number of leaves dequeued", logIDLabel)
+	queuedCounter = mf.NewCounter("commit_queued_leaves", "Number of leaves queued", logIDLabel)
+	dequeuedCounter = mf.NewCounter("commit_dequeued_leaves", "Number of leaves dequeued", logIDLabel)
 }
 
 func labelForTX(t *logTreeTX) string {
@@ -70,30 +71,30 @@ func sthKey(treeID, timestamp int64) btree.Item {
 	return &kv{k: fmt.Sprintf("/%d/sth/%020d", treeID, timestamp)}
 }
 
-type memoryLogStorage struct {
-	*memoryTreeStorage
+type commitLogStorage struct {
+	*commitTreeStorage
 	admin storage.AdminStorage
 }
 
-// NewLogStorage creates an in-memory LogStorage instance.
-func NewLogStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer) storage.LogStorage {
-	ret := &memoryLogStorage{
-		memoryTreeStorage: newTreeStorage(kafkaProd, kafkaCons),
+// NewLogStorage creates a commit log LogStorage instance.
+func NewLogStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, client gohbase.Client) storage.LogStorage {
+	ret := &commitLogStorage{
+		commitTreeStorage: newTreeStorage(kafkaProd, kafkaCons, client),
 	}
 	ret.admin = NewAdminStorage(ret)
 	return ret
 }
 
-func (m *memoryLogStorage) CheckDatabaseAccessible(ctx context.Context) error {
+func (m *commitLogStorage) CheckDatabaseAccessible(ctx context.Context) error {
 	return nil
 }
 
 type readOnlyLogTX struct {
-	ms *memoryTreeStorage
+	ms *commitTreeStorage
 }
 
-func (m *memoryLogStorage) Snapshot(ctx context.Context) (storage.ReadOnlyLogTX, error) {
-	return &readOnlyLogTX{m.memoryTreeStorage}, nil
+func (m *commitLogStorage) Snapshot(ctx context.Context) (storage.ReadOnlyLogTX, error) {
+	return &readOnlyLogTX{m.commitTreeStorage}, nil
 }
 
 func (t *readOnlyLogTX) Commit() error {
@@ -124,7 +125,7 @@ func (t *readOnlyLogTX) GetActiveLogIDsWithPendingWork(ctx context.Context) ([]i
 	return t.GetActiveLogIDs(ctx)
 }
 
-func (m *memoryLogStorage) beginInternal(ctx context.Context, treeID int64, readonly bool) (storage.LogTreeTX, error) {
+func (m *commitLogStorage) beginInternal(ctx context.Context, treeID int64, readonly bool) (storage.LogTreeTX, error) {
 	once.Do(func() {
 		// TODO(drysdale): this should come from the registry rather than hard-coding use of Prometheus
 		createMetrics(prometheus.MetricFactory{})
@@ -143,7 +144,7 @@ func (m *memoryLogStorage) beginInternal(ctx context.Context, treeID int64, read
 	}
 
 	stCache := cache.NewSubtreeCache(defaultLogStrata, cache.PopulateLogSubtreeNodes(hasher), cache.PrepareLogSubtreeWrite())
-	ttx, err := m.memoryTreeStorage.beginTreeTX(ctx, readonly, treeID, hasher.Size(), stCache)
+	ttx, err := m.commitTreeStorage.beginTreeTX(ctx, readonly, treeID, hasher.Size(), stCache)
 	if err != nil {
 		return nil, err
 	}
@@ -163,11 +164,11 @@ func (m *memoryLogStorage) beginInternal(ctx context.Context, treeID int64, read
 	return ltx, nil
 }
 
-func (m *memoryLogStorage) BeginForTree(ctx context.Context, treeID int64) (storage.LogTreeTX, error) {
+func (m *commitLogStorage) BeginForTree(ctx context.Context, treeID int64) (storage.LogTreeTX, error) {
 	return m.beginInternal(ctx, treeID, false /* readonly */)
 }
 
-func (m *memoryLogStorage) SnapshotForTree(ctx context.Context, treeID int64) (storage.ReadOnlyLogTreeTX, error) {
+func (m *commitLogStorage) SnapshotForTree(ctx context.Context, treeID int64) (storage.ReadOnlyLogTreeTX, error) {
 	tx, err := m.beginInternal(ctx, treeID, true /* readonly */)
 	if err != nil {
 		return nil, err
@@ -177,7 +178,7 @@ func (m *memoryLogStorage) SnapshotForTree(ctx context.Context, treeID int64) (s
 
 type logTreeTX struct {
 	treeTX
-	ls   *memoryLogStorage
+	ls   *commitLogStorage
 	root trillian.SignedLogRoot
 }
 
@@ -243,41 +244,54 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 }
 
 func (t *logTreeTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
-	var sequencedLeafCount int64
+	// var sequencedLeafCount int64
 
-	t.tx.DescendRange(seqLeafKey(t.treeID, math.MaxInt64), seqLeafKey(t.treeID, 0), func(i btree.Item) bool {
-		sequencedLeafCount = i.(*kv).v.(*trillian.LogLeaf).LeafIndex + 1
-		return false
-	})
-	return sequencedLeafCount, nil
+	// t.tx.DescendRange(seqLeafKey(t.treeID, math.MaxInt64), seqLeafKey(t.treeID, 0), func(i btree.Item) bool {
+	// 	sequencedLeafCount = i.(*kv).v.(*trillian.LogLeaf).LeafIndex + 1
+	// 	return false
+	// })
+	// return sequencedLeafCount, nil
+	return t.ls.trees[t.treeID].kafkaOffset + 1, nil
 }
 
 func (t *logTreeTX) GetLeavesByIndex(ctx context.Context, leaves []int64) ([]*trillian.LogLeaf, error) {
 	ret := make([]*trillian.LogLeaf, 0, len(leaves))
 	for _, seq := range leaves {
-		leaf := t.tx.Get(seqLeafKey(t.treeID, seq))
-		if leaf != nil {
-			ret = append(ret, leaf.(*kv).v.(*trillian.LogLeaf))
+		leafBytes, err := t.tx.QualifiedGet("subtrees", seqLeafKey(t.treeID, seq).(*kv).k, "raw", "bytes")
+		if err != nil {
+			return nil, err
 		}
+		var leaf trillian.LogLeaf
+		if err := proto.Unmarshal(leafBytes.v.([]byte), &leaf); err != nil {
+			return nil, err
+		}
+		ret = append(ret, &leaf)
 	}
 	return ret, nil
 }
 
 func (t *logTreeTX) GetLeavesByHash(ctx context.Context, leafHashes [][]byte, orderBySequence bool) ([]*trillian.LogLeaf, error) {
-	m := t.tx.Get(hashToSeqKey(t.treeID)).(*kv).v.(map[string][]int64)
+	treeIDJsonBytes, err := t.tx.QualifiedGet("subtrees", hashToSeqKey(t.treeID).(*kv).k, "raw", "bytes")
+	if err != nil {
+		return nil, err
+	}
+	var treeIDMap map[string][]int64
+	if err := json.Unmarshal(treeIDJsonBytes.v.([]byte), &treeIDMap); err != nil {
+		return nil, err
+	}
 
 	ret := make([]*trillian.LogLeaf, 0, len(leafHashes))
 	for hash := range leafHashes {
-		seq, ok := m[string(hash)]
+		seq, ok := treeIDMap[string(hash)]
 		if !ok {
 			continue
 		}
 		for _, s := range seq {
-			l := t.tx.Get(seqLeafKey(t.treeID, s))
-			if l == nil {
+			l, err := t.tx.QualifiedGet("subtrees", seqLeafKey(t.treeID, s).(*kv).k, "raw", "bytes")
+			if err != nil {
 				continue
 			}
-			ret = append(ret, l.(*kv).v.(*trillian.LogLeaf))
+			ret = append(ret, l.v.(*trillian.LogLeaf))
 		}
 	}
 	return ret, nil
@@ -289,17 +303,29 @@ func (t *logTreeTX) LatestSignedLogRoot(ctx context.Context) (trillian.SignedLog
 
 // fetchLatestRoot reads the latest SignedLogRoot from the DB and returns it.
 func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot, error) {
-	r := t.tx.Get(sthKey(t.treeID, t.tree.currentSTH))
-	if r == nil {
-		return trillian.SignedLogRoot{}, nil
+	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, t.tree.currentSTH).(*kv).k, "raw", "bytes")
+	if err != nil {
+		return trillian.SignedLogRoot{}, err
 	}
-	return r.(*kv).v.(trillian.SignedLogRoot), nil
+
+	var root trillian.SignedLogRoot
+	err = proto.Unmarshal(r.v.([]byte), &root)
+	if err != nil {
+		return trillian.SignedLogRoot{}, err
+	}
+
+	return root, nil
 }
 
 func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.SignedLogRoot) error {
 	k := sthKey(t.treeID, root.TimestampNanos)
-	k.(*kv).v = root
-	t.tx.ReplaceOrInsert(k)
+	// k.(*kv).v = root
+	encoded, err := proto.Marshal(&root)
+	if err != nil {
+		return err
+	}
+
+	t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
 
 	// TODO(alcutter): this breaks the transactional model
 	if root.TimestampNanos > t.tree.currentSTH {
@@ -320,12 +346,32 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		// insert sequenced leaf:
 		k := seqLeafKey(t.treeID, leaf.LeafIndex)
 		k.(*kv).v = leaf
-		t.tx.ReplaceOrInsert(k)
+
+		t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", k.(*kv).v.([]byte))
+
 		// update merkle-to-seq mapping:
-		m := t.tx.Get(hashToSeqKey(t.treeID))
-		l := m.(*kv).v.(map[string][]int64)[string(leaf.MerkleLeafHash)]
+		key := hashToSeqKey(t.treeID).(*kv).k
+		m, err := t.tx.QualifiedGet("subtrees", key, "raw", "bytes")
+		if err != nil {
+			return err
+		}
+
+		var treeIDMap map[string][]int64
+		if err := json.Unmarshal(m.v.([]byte), &treeIDMap); err != nil {
+			return err
+		}
+
+		l := treeIDMap[string(leaf.MerkleLeafHash)]
 		l = append(l, leaf.LeafIndex)
-		m.(*kv).v.(map[string][]int64)[string(leaf.MerkleLeafHash)] = l
+		treeIDMap[string(leaf.MerkleLeafHash)] = l
+
+		var treeIDMapBytes []byte
+		treeIDMapBytes, err = json.Marshal(treeIDMap)
+		if err != nil {
+			return err
+		}
+
+		t.tx.BufferedPut("subtrees", key, "raw", "bytes", treeIDMapBytes)
 	}
 
 	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, t.tree.kafkaOffset)

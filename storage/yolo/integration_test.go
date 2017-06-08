@@ -59,6 +59,8 @@ func TestLogIntegration(t *testing.T) {
 	}
 }
 
+// Kafka mocks
+
 type consumerMock struct {
 	sync.RWMutex
 	name  string

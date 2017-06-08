@@ -28,18 +28,19 @@ import (
 	"github.com/google/trillian/storage"
 	"github.com/google/trillian/storage/cache"
 	"github.com/google/trillian/storage/storagepb"
+	"github.com/tsuna/gohbase"
 )
 
 const degree = 8
 
-func subtreeKey(treeID, rev int64, nodeID storage.NodeID) btree.Item {
+func subtreeKey(treeID, rev int64, nodeID storage.NodeID) *kv {
 	return &kv{k: fmt.Sprintf("/%d/subtree/%s/%d", treeID, nodeID.String(), rev)}
 }
 
 // tree stores all data for a given treeID
 type tree struct {
 	mu          sync.RWMutex
-	store       *btree.BTree
+	store       *hbaseClient
 	currentSTH  int64 // currentSTH is the timestamp of the current STH.
 	meta        *trillian.Tree
 	kafkaOffset int64 // TODO(filippo): probably belongs on a tx?
@@ -69,25 +70,25 @@ func Dump(t *btree.BTree) {
 	})
 }
 
-// memoryTreeStorage is shared between the memoryLog and (forthcoming) memoryMap-
-// Storage implementations, and contains functionality which is common to both,
-type memoryTreeStorage struct {
+type commitTreeStorage struct {
 	mu        sync.RWMutex
 	trees     map[int64]*tree
 	kafkaProd sarama.SyncProducer
 	kafkaCons sarama.Consumer
+	hbase     *hbaseClient
 }
 
-func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer) *memoryTreeStorage {
-	return &memoryTreeStorage{
+func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, client gohbase.Client) *commitTreeStorage {
+	return &commitTreeStorage{
 		trees:     make(map[int64]*tree),
 		kafkaProd: kafkaProd,
 		kafkaCons: kafkaCons,
+		hbase:     newHBaseClient(client),
 	}
 }
 
 // getTree returns the tree associated with id, or nil if no such tree exists.
-func (m *memoryTreeStorage) getTree(id int64) *tree {
+func (m *commitTreeStorage) getTree(id int64) *tree {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.trees[id]
@@ -112,16 +113,20 @@ func newTree(t trillian.Tree) *tree {
 	}
 	k := unseqKey(t.TreeId)
 	k.(*kv).v = list.New()
-	ret.store.ReplaceOrInsert(k)
+	ret.store.Put("subtrees", k.k, "raw", "bytes", []byte{})
 
 	k = hashToSeqKey(t.TreeId)
-	k.(*kv).v = make(map[string][]int64)
-	ret.store.ReplaceOrInsert(k)
+	k.v = make(map[string][]int64)
+
+	var treeIDMapBytes []byte
+	treeIDMapBytes, _ := json.Marshal(k.v)
+
+	t.tx.BufferedPut("subtrees", k.k, "raw", "bytes", treeIDMapBytes)
 
 	return ret
 }
 
-func (m *memoryTreeStorage) beginTreeTX(ctx context.Context, readonly bool, treeID int64, hashSizeBytes int, cache cache.SubtreeCache) (treeTX, error) {
+func (m *commitTreeStorage) beginTreeTX(ctx context.Context, readonly bool, treeID int64, hashSizeBytes int, cache cache.SubtreeCache) (treeTX, error) {
 	tree := m.getTree(treeID)
 	// Lock the tree for the duration of the TX.
 	// It will be unlocked by a call to Commit or Rollback.
@@ -147,8 +152,8 @@ func (m *memoryTreeStorage) beginTreeTX(ctx context.Context, readonly bool, tree
 
 type treeTX struct {
 	closed        bool
-	tx            *btree.BTree
-	ts            *memoryTreeStorage
+	tx            *hbaseClient
+	ts            *commitTreeStorage
 	tree          *tree
 	treeID        int64
 	hashSizeBytes int
@@ -186,11 +191,16 @@ func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, nodeIDs []
 
 		// Look for a nodeID at or below treeRevision:
 		for r := treeRevision; r >= 0; r-- {
-			s := t.tx.Get(subtreeKey(t.treeID, r, nodeID))
-			if s == nil {
+			key := subtreeKey(t.treeID, r, nodeID)
+			subtreeKV := t.tx.QualifiedGet("subtrees", key.k, "raw", "bytes")
+			if subtreeKV == nil {
 				continue
 			}
-			ret = append(ret, s.(*kv).v.(*storagepb.SubtreeProto))
+			var subtree storagepb.SubtreeProto
+			if err := proto.Unmarshal(subtreeKV.v, &subtree); err != nil {
+				continue
+			}
+			ret = append(ret, subtree)
 			break
 		}
 	}
@@ -211,9 +221,13 @@ func (t *treeTX) storeSubtrees(ctx context.Context, subtrees []*storagepb.Subtre
 		if s.Prefix == nil {
 			panic(fmt.Errorf("nil prefix on %v", s))
 		}
-		k := subtreeKey(t.treeID, t.writeRevision, storage.NewNodeIDFromHash(s.Prefix))
-		k.(*kv).v = s
-		t.tx.ReplaceOrInsert(k)
+		key := subtreeKey(t.treeID, t.writeRevision, storage.NewNodeIDFromHash(s.Prefix))
+		// k.(*kv).v = s
+		subtreeBytes, err := proto.Marshal(s)
+		if err != nil {
+			return err
+		}
+		t.tx.BufferedPut("subtrees", key.k, "raw", "bytes", subtreeBytes)
 	}
 	return nil
 }
@@ -248,7 +262,11 @@ func (t *treeTX) Commit() error {
 
 	if t.writeRevision > -1 {
 		if err := t.subtreeCache.Flush(func(st []*storagepb.SubtreeProto) error {
-			return t.storeSubtrees(context.TODO(), st)
+			flushErr := t.storeSubtrees(context.TODO(), st)
+			if flushErr != nil {
+				return flushErr
+			}
+			t.Flush()
 		}); err != nil {
 			glog.Warningf("TX commit flush error: %v", err)
 			return err

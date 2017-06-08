@@ -26,26 +26,26 @@ import (
 )
 
 // NewAdminStorage returns a storage.AdminStorage implementation backed by
-// memoryTreeStorage.
+// commitTreeStorage.
 func NewAdminStorage(ms storage.LogStorage) storage.AdminStorage {
-	return &memoryAdminStorage{ms.(*memoryLogStorage).memoryTreeStorage}
+	return &commitAdminStorage{ms.(*commitLogStorage).commitTreeStorage}
 }
 
-// memoryAdminStorage implements storage.AdminStorage
-type memoryAdminStorage struct {
-	ms *memoryTreeStorage
+// commitAdminStorage implements storage.AdminStorage
+type commitAdminStorage struct {
+	ms *commitTreeStorage
 }
 
-func (s *memoryAdminStorage) Snapshot(ctx context.Context) (storage.ReadOnlyAdminTX, error) {
+func (s *commitAdminStorage) Snapshot(ctx context.Context) (storage.ReadOnlyAdminTX, error) {
 	return s.Begin(ctx)
 }
 
-func (s *memoryAdminStorage) Begin(ctx context.Context) (storage.AdminTX, error) {
+func (s *commitAdminStorage) Begin(ctx context.Context) (storage.AdminTX, error) {
 	return &adminTX{ms: s.ms}, nil
 }
 
 type adminTX struct {
-	ms *memoryTreeStorage
+	ms *commitTreeStorage
 	// mu guards reads/writes on closed, which happen only on
 	// Commit/Rollback/IsClosed/Close methods.
 	// We don't check closed on *all* methods (apart from the ones above),
