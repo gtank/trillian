@@ -10,6 +10,10 @@ import (
 	"github.com/tsuna/gohbase/hrpc"
 )
 
+var (
+	ErrDoesNotExist = errors.New("requested entry does not exist")
+)
+
 // hbaseClient wraps a gohbase.Client to provide transaction semantics
 type hbaseClient struct {
 	sync.RWMutex
@@ -79,10 +83,18 @@ func (c *hbaseClient) QualifiedGet(table, row, family, qualifier string) (*kv, e
 	// fmt.Printf("Get: %s[%s] -> %s:%s\n", table, row, family, qualifier)
 	req, err := hrpc.NewGet(context.Background(), []byte(table), []byte(row))
 	if err != nil {
+		errorMsg := fmt.Sprintf("key does not exist: %s", row)
+		if err.Error() == errorMsg {
+			return nil, ErrDoesNotExist
+		}
 		return nil, err
 	}
 	res, err := c.client.Get(req)
 	if err != nil {
+		errorMsg := fmt.Sprintf("key does not exist: %s", row)
+		if err.Error() == errorMsg {
+			return nil, ErrDoesNotExist
+		}
 		return nil, err
 	}
 
@@ -96,8 +108,7 @@ func (c *hbaseClient) QualifiedGet(table, row, family, qualifier string) (*kv, e
 		kv := &kv{k: row, v: cell.Value}
 		return kv, nil
 	}
-	errorMsg := fmt.Sprintf("row has no %s:%s", family, qualifier)
-	return nil, errors.New(errorMsg)
+	return nil, ErrDoesNotExist
 }
 
 func (t *hbaseClient) BufferedPut(table, row, family, qualifier string, value []byte) {

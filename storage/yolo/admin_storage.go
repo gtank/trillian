@@ -16,11 +16,13 @@ package yolo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
 )
@@ -94,36 +96,54 @@ func (t *adminTX) Close() error {
 }
 
 func (t *adminTX) GetTree(ctx context.Context, treeID int64) (*trillian.Tree, error) {
-	tree := t.ms.getTree(treeID)
-	tree.RLock()
-	defer tree.RUnlock()
-
-	if tree == nil {
-		return nil, fmt.Errorf("no such treeID %d", treeID)
+	treeKey := metaKey(treeID, "tree").(*kv).k
+	treeProtoBytes, err := t.ms.hbase.QualifiedGet("subtrees", treeKey, "raw", "bytes")
+	if err != nil {
+		return nil, err
 	}
-	return tree.meta, nil
+	var tree trillian.Tree
+	if err := proto.Unmarshal(treeProtoBytes.v.([]byte), &tree); err != nil {
+		return nil, err
+	}
+	return &tree, nil
 }
 
 func (t *adminTX) ListTreeIDs(ctx context.Context) ([]int64, error) {
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
-	var ret []int64
-	for _, v := range t.ms.trees {
-		ret = append(ret, v.meta.TreeId)
+	treeListJsonBytes, err := t.ms.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			treeListJsonBytes.v = []byte("[]")
+		}
+		return nil, err
 	}
-	return ret, nil
+	var treeIDList []int64
+	if err := json.Unmarshal(treeListJsonBytes.v.([]byte), &treeIDList); err != nil {
+		return nil, err
+	}
+	return treeIDList, nil
 }
 
 func (t *adminTX) ListTrees(ctx context.Context) ([]*trillian.Tree, error) {
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
-	var ret []*trillian.Tree
-	for _, v := range t.ms.trees {
-		ret = append(ret, v.meta)
+	treeIDList, err := t.ListTreeIDs(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return ret, nil
+	treeList := make([]*trillian.Tree, len(treeIDList))
+	for i := 0; i < len(treeIDList); i++ {
+		tree, err := t.GetTree(ctx, treeIDList[i])
+		if err != nil {
+			glog.Warningf("tried to get tree with id %d, got err: %v", treeIDList[i], err)
+			continue
+		}
+		treeList[i] = tree
+	}
+	return treeList, nil
 }
 
 func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.Tree, error) {
@@ -148,7 +168,41 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 
 	t.ms.mu.Lock()
 	defer t.ms.mu.Unlock()
-	t.ms.trees[id] = t.ms.newTree(meta)
+
+	newTree := t.ms.newTree(meta)
+	newTreeKey := metaKey(meta.TreeId, "tree")
+	encoded, err := proto.Marshal(&meta)
+	if err != nil {
+		return nil, err
+	}
+	newTree.store.BufferedPut("subtrees", newTreeKey.(*kv).k, "raw", "bytes", encoded)
+
+	// add new tree to the index
+	treeListJsonBytes, err := newTree.store.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			treeListJsonBytes = &kv{k: "/meta/tree_list", v: []byte("[]")}
+		} else {
+			return nil, err
+		}
+	}
+	var treeIDList []int64
+	if err := json.Unmarshal(treeListJsonBytes.v.([]byte), &treeIDList); err != nil {
+		return nil, err
+	}
+	treeIDList = append(treeIDList, meta.TreeId)
+	treeListJsonBytes.v, err = json.Marshal(treeIDList)
+	if err != nil {
+		return nil, err
+	}
+	newTree.store.BufferedPut("subtrees", "/meta/tree_list", "raw", "bytes", treeListJsonBytes.v.([]byte))
+
+	// persist the new tree before returning
+	if err := newTree.store.Flush(); err != nil {
+		return nil, err
+	}
+
+	t.ms.trees[id] = newTree
 
 	glog.Infof("trees: %v", t.ms.trees)
 

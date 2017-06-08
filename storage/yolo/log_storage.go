@@ -71,6 +71,10 @@ func sthKey(treeID, timestamp int64) btree.Item {
 	return &kv{k: fmt.Sprintf("/%d/sth/%020d", treeID, timestamp)}
 }
 
+func metaKey(treeID int64, key string) btree.Item {
+	return &kv{k: fmt.Sprintf("/%d/meta/%s", treeID, key)}
+}
+
 type commitLogStorage struct {
 	*commitTreeStorage
 	admin storage.AdminStorage
