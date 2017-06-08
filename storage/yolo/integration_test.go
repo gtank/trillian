@@ -28,7 +28,10 @@ func TestLogIntegration(t *testing.T) {
 	defer producer.Close()
 	consumer := &consumerMock{}
 
-	ms := yolo.NewLogStorage(producer, consumer)
+	hbaseClient := yolo.NewMockClient("mock_quorum")
+	defer hbaseClient.Close()
+
+	ms := yolo.NewLogStorage(producer, consumer, hbaseClient)
 
 	reggie := extension.Registry{
 		AdminStorage:  yolo.NewAdminStorage(ms),

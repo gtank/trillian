@@ -101,28 +101,28 @@ func (t *hbaseClient) BufferedPut(table, row, family, qualifier string, value []
 }
 
 // mockClient implements gohbase.Client for testing
-type mockClient struct {
+type MockClient struct {
 	sync.RWMutex
 	tables   map[string]map[string]hrpc.Result
 	zkquorum string
 	options  []gohbase.Option
 }
 
-func newMockClient(zkquorum string, options ...gohbase.Option) mockClient {
-	return mockClient{
+func NewMockClient(zkquorum string, options ...gohbase.Option) MockClient {
+	return MockClient{
 		tables:   make(map[string]map[string]hrpc.Result),
 		zkquorum: zkquorum,
 		options:  options,
 	}
 }
 
-func (m *mockClient) Scan(s *hrpc.Scan) hrpc.Scanner              { panic("not implemented") }
-func (m *mockClient) Get(g *hrpc.Get) (*hrpc.Result, error)       { panic("not implemented") }
-func (m *mockClient) Put(p *hrpc.Mutate) (*hrpc.Result, error)    { panic("not implemented") }
-func (m *mockClient) Delete(d *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
-func (m *mockClient) Append(a *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
-func (m *mockClient) Increment(i *hrpc.Mutate) (int64, error)     { panic("not implemented") }
-func (m *mockClient) CheckAndPut(p *hrpc.Mutate, family string, qualifier string, expectedValue []byte) (bool, error) {
+func (m MockClient) Scan(s *hrpc.Scan) hrpc.Scanner              { panic("not implemented") }
+func (m MockClient) Get(g *hrpc.Get) (*hrpc.Result, error)       { panic("not implemented") }
+func (m MockClient) Put(p *hrpc.Mutate) (*hrpc.Result, error)    { panic("not implemented") }
+func (m MockClient) Delete(d *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
+func (m MockClient) Append(a *hrpc.Mutate) (*hrpc.Result, error) { panic("not implemented") }
+func (m MockClient) Increment(i *hrpc.Mutate) (int64, error)     { panic("not implemented") }
+func (m MockClient) CheckAndPut(p *hrpc.Mutate, family string, qualifier string, expectedValue []byte) (bool, error) {
 	panic("not implemented")
 }
-func (m *mockClient) Close() { return }
+func (m MockClient) Close() { return }

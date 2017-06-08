@@ -148,7 +148,7 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 
 	t.ms.mu.Lock()
 	defer t.ms.mu.Unlock()
-	t.ms.trees[id] = newTree(meta)
+	t.ms.trees[id] = t.ms.newTree(meta)
 
 	glog.Infof("trees: %v", t.ms.trees)
 

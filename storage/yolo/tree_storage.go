@@ -17,12 +17,14 @@ package yolo
 import (
 	"container/list"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/Shopify/sarama"
 	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
 	"github.com/google/btree"
 	"github.com/google/trillian"
 	"github.com/google/trillian/storage"
@@ -106,22 +108,22 @@ func (a kv) Less(b btree.Item) bool {
 }
 
 // newTree creates and initializes a tree struct.
-func newTree(t trillian.Tree) *tree {
+func (cts *commitTreeStorage) newTree(t trillian.Tree) *tree {
 	ret := &tree{
-		store: btree.New(degree),
+		store: cts.hbase,
 		meta:  &t,
 	}
 	k := unseqKey(t.TreeId)
 	k.(*kv).v = list.New()
-	ret.store.Put("subtrees", k.k, "raw", "bytes", []byte{})
+	ret.store.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", []byte{})
 
 	k = hashToSeqKey(t.TreeId)
-	k.v = make(map[string][]int64)
+	k.(*kv).v = make(map[string][]int64)
 
 	var treeIDMapBytes []byte
-	treeIDMapBytes, _ := json.Marshal(k.v)
+	treeIDMapBytes, _ = json.Marshal(k.(*kv).v)
 
-	t.tx.BufferedPut("subtrees", k.k, "raw", "bytes", treeIDMapBytes)
+	ret.store.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", treeIDMapBytes)
 
 	return ret
 }
@@ -140,7 +142,7 @@ func (m *commitTreeStorage) beginTreeTX(ctx context.Context, readonly bool, tree
 	}
 	return treeTX{
 		ts:            m,
-		tx:            tree.store.Clone(),
+		tx:            tree.store,
 		tree:          tree,
 		treeID:        treeID,
 		hashSizeBytes: hashSizeBytes,
@@ -192,15 +194,15 @@ func (t *treeTX) getSubtrees(ctx context.Context, treeRevision int64, nodeIDs []
 		// Look for a nodeID at or below treeRevision:
 		for r := treeRevision; r >= 0; r-- {
 			key := subtreeKey(t.treeID, r, nodeID)
-			subtreeKV := t.tx.QualifiedGet("subtrees", key.k, "raw", "bytes")
-			if subtreeKV == nil {
+			subtreeKV, err := t.tx.QualifiedGet("subtrees", key.k, "raw", "bytes")
+			if err != nil {
 				continue
 			}
 			var subtree storagepb.SubtreeProto
-			if err := proto.Unmarshal(subtreeKV.v, &subtree); err != nil {
+			if err := proto.Unmarshal(subtreeKV.v.([]byte), &subtree); err != nil {
 				continue
 			}
-			ret = append(ret, subtree)
+			ret = append(ret, &subtree)
 			break
 		}
 	}
@@ -266,7 +268,8 @@ func (t *treeTX) Commit() error {
 			if flushErr != nil {
 				return flushErr
 			}
-			t.Flush()
+			t.tx.Flush()
+			return nil
 		}); err != nil {
 			glog.Warningf("TX commit flush error: %v", err)
 			return err
