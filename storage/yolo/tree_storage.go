@@ -118,10 +118,25 @@ func (m *commitTreeStorage) getTree(id int64) (*tree, error) {
 		return nil, err
 	}
 
+	var currentSTH int64
+	sthMetaKey := metaKey(id, "currentSTH").(*kv).k
+	sthResult, err := m.hbase.QualifiedGet("subtrees", sthMetaKey, "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			sthResult = &kv{k: sthMetaKey, v: []byte("0")}
+		} else {
+			return nil, err
+		}
+	}
+	if err := json.Unmarshal(sthResult.v.([]byte), &currentSTH); err != nil {
+		return nil, err
+	}
+
 	ret := &tree{
 		store:       m.hbase,
 		meta:        &meta,
 		kafkaOffset: offset,
+		currentSTH:  currentSTH,
 	}
 
 	return ret, nil

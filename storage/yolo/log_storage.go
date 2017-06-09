@@ -355,12 +355,24 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 		return err
 	}
 
-	t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
-
 	// TODO(alcutter): this breaks the transactional model
 	if root.TimestampNanos > t.tree.currentSTH {
 		t.tree.currentSTH = root.TimestampNanos
 	}
+
+	sthMetaKey := metaKey(t.treeID, "currentSTH").(*kv).k
+	sthBytes, err := json.Marshal(t.tree.currentSTH)
+	if err != nil {
+		return err
+	}
+
+	t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
+	t.tx.BufferedPut("subtrees", sthMetaKey, "raw", "bytes", sthBytes)
+
+	// 	if err := t.tx.Flush(); err != nil {
+	// 		return err
+	// 	}
+
 	return nil
 }
 
