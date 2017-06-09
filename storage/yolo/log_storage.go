@@ -248,14 +248,22 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 }
 
 func (t *logTreeTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
-	// var sequencedLeafCount int64
-
-	// t.tx.DescendRange(seqLeafKey(t.treeID, math.MaxInt64), seqLeafKey(t.treeID, 0), func(i btree.Item) bool {
-	// 	sequencedLeafCount = i.(*kv).v.(*trillian.LogLeaf).LeafIndex + 1
-	// 	return false
-	// })
-	// return sequencedLeafCount, nil
-	return t.ls.trees[t.treeID].kafkaOffset, nil
+	// return t.ls.trees[t.treeID].kafkaOffset, nil
+	t.ls.mu.RLock()
+	defer t.ls.mu.RUnlock()
+	offsetMetaKey := metaKey(t.treeID, "offset").(*kv).k
+	offsetResult, err := t.tx.QualifiedGet("subtrees", offsetMetaKey, "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			return 0, nil
+		}
+		return 0, err
+	}
+	var offset int64
+	if err := json.Unmarshal(offsetResult.v.([]byte), &offset); err != nil {
+		return 0, err
+	}
+	return offset, nil
 }
 
 func (t *logTreeTX) GetLeavesByIndex(ctx context.Context, leaves []int64) ([]*trillian.LogLeaf, error) {
@@ -341,6 +349,8 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 }
 
 func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillian.LogLeaf) error {
+	t.ls.mu.Lock()
+	defer t.ls.mu.Unlock()
 	countByMerkleHash := make(map[string]int)
 	for _, leaf := range leaves {
 		// This should fail on insert but catch it early
@@ -413,11 +423,25 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return fmt.Errorf("attempted to update %d unknown leaves: %x", unknown, countByMerkleHash)
 	}
 
-	t.tree.kafkaOffset += int64(len(leaves))
+	// t.tree.kafkaOffset += int64(len(leaves))
+
+	newKafkaOffset := t.tree.kafkaOffset + int64(len(leaves))
+	offsetMetaKey := metaKey(t.treeID, "offset").(*kv).k
+	offsetBytes, err := json.Marshal(newKafkaOffset)
+	if err != nil {
+		return err
+	}
+	t.tx.BufferedPut("subtrees", offsetMetaKey, "raw", "bytes", offsetBytes)
+	if err := t.tx.Flush(); err != nil {
+		return err
+	}
+
+	t.tree.kafkaOffset = newKafkaOffset
 	return nil
 }
 
 func (t *logTreeTX) getActiveLogIDs(ctx context.Context) ([]int64, error) {
+	// TODO(gtank): Use HBase
 	var ret []int64
 	for k := range t.ts.trees {
 		ret = append(ret, k)
