@@ -114,14 +114,31 @@ func (t *readOnlyLogTX) Close() error {
 }
 
 func (t *readOnlyLogTX) GetActiveLogIDs(ctx context.Context) ([]int64, error) {
+	// t.ms.mu.RLock()
+	// defer t.ms.mu.RUnlock()
+
+	// ret := make([]int64, 0, len(t.ms.trees))
+	// for k := range t.ms.trees {
+	// 	ret = append(ret, k)
+	// }
+	// return ret, nil
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
-	ret := make([]int64, 0, len(t.ms.trees))
-	for k := range t.ms.trees {
-		ret = append(ret, k)
+	var treeListJsonBytes *kv
+	treeListJsonBytes, err := t.ms.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			treeListJsonBytes.v = []byte("[]")
+		}
+		return nil, err
 	}
-	return ret, nil
+	var treeIDList []int64
+	if err := json.Unmarshal(treeListJsonBytes.v.([]byte), &treeIDList); err != nil {
+		return nil, err
+	}
+	return treeIDList, nil
+
 }
 
 func (t *readOnlyLogTX) GetActiveLogIDsWithPendingWork(ctx context.Context) ([]int64, error) {
@@ -442,11 +459,23 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 
 func (t *logTreeTX) getActiveLogIDs(ctx context.Context) ([]int64, error) {
 	// TODO(gtank): Use HBase
-	var ret []int64
-	for k := range t.ts.trees {
-		ret = append(ret, k)
+	t.ls.mu.RLock()
+	defer t.ls.mu.RUnlock()
+
+	var treeListJsonBytes *kv
+	treeListJsonBytes, err := t.ls.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			treeListJsonBytes.v = []byte("[]")
+		}
+		return nil, err
 	}
-	return ret, nil
+	var treeIDList []int64
+	if err := json.Unmarshal(treeListJsonBytes.v.([]byte), &treeIDList); err != nil {
+		return nil, err
+	}
+	return treeIDList, nil
+
 }
 
 // GetActiveLogIDs returns a list of the IDs of all configured logs

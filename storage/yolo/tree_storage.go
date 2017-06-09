@@ -72,8 +72,8 @@ func Dump(t *btree.BTree) {
 }
 
 type commitTreeStorage struct {
-	mu        sync.RWMutex
-	trees     map[int64]*tree
+	mu sync.RWMutex
+	// trees     map[int64]*tree
 	kafkaProd sarama.SyncProducer
 	kafkaCons sarama.Consumer
 	hbase     *hbaseClient
@@ -81,7 +81,7 @@ type commitTreeStorage struct {
 
 func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, client gohbase.Client) *commitTreeStorage {
 	return &commitTreeStorage{
-		trees:     make(map[int64]*tree),
+		// trees:     make(map[int64]*tree),
 		kafkaProd: kafkaProd,
 		kafkaCons: kafkaCons,
 		hbase:     newHBaseClient(client),
@@ -89,10 +89,26 @@ func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, cl
 }
 
 // getTree returns the tree associated with id, or nil if no such tree exists.
-func (m *commitTreeStorage) getTree(id int64) *tree {
+func (m *commitTreeStorage) getTree(id int64) (*tree, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.trees[id]
+
+	treekey := metaKey(id, "tree").(*kv).k
+	treeprotobytes, err := m.hbase.QualifiedGet("subtrees", treekey, "raw", "bytes")
+	if err != nil {
+		return nil, err
+	}
+	var meta trillian.Tree
+	if err := proto.Unmarshal(treeprotobytes.v.([]byte), &meta); err != nil {
+		return nil, err
+	}
+
+	ret := &tree{
+		store: m.hbase,
+		meta:  &meta,
+	}
+
+	return ret, nil
 }
 
 // kv is a simple key->value type which implements btree's Item interface.
@@ -131,7 +147,10 @@ func (cts *commitTreeStorage) newTree(t trillian.Tree) *tree {
 }
 
 func (m *commitTreeStorage) beginTreeTX(ctx context.Context, readonly bool, treeID int64, hashSizeBytes int, cache cache.SubtreeCache) (treeTX, error) {
-	tree := m.getTree(treeID)
+	tree, err := m.getTree(treeID)
+	if err != nil {
+		return treeTX{}, err
+	}
 	// Lock the tree for the duration of the TX.
 	// It will be unlocked by a call to Commit or Rollback.
 	var unlock func()

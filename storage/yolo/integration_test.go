@@ -31,6 +31,7 @@ func TestLogIntegration(t *testing.T) {
 	consumer := &consumerMock{}
 
 	hbaseClient := yolo.NewMockClient("mock_quorum")
+	// hbaseClient := gohbase.NewClient("localhost:2181")
 	defer hbaseClient.Close()
 
 	ms := yolo.NewLogStorage(producer, consumer, hbaseClient)

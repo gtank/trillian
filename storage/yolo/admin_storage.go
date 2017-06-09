@@ -112,6 +112,7 @@ func (t *adminTX) ListTreeIDs(ctx context.Context) ([]int64, error) {
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
+	var treeListJsonBytes *kv
 	treeListJsonBytes, err := t.ms.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
 	if err != nil {
 		if err == ErrDoesNotExist {
@@ -178,7 +179,8 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 	newTree.store.BufferedPut("subtrees", newTreeKey.(*kv).k, "raw", "bytes", encoded)
 
 	// add new tree to the index
-	treeListJsonBytes, err := newTree.store.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
+	var treeListJsonBytes *kv
+	treeListJsonBytes, err = newTree.store.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
 	if err != nil {
 		if err == ErrDoesNotExist {
 			treeListJsonBytes = &kv{k: "/meta/tree_list", v: []byte("[]")}
@@ -202,15 +204,16 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 		return nil, err
 	}
 
-	t.ms.trees[id] = newTree
-
-	glog.Infof("trees: %v", t.ms.trees)
+	glog.Infof("tree: %v", meta)
 
 	return &meta, nil
 }
 
 func (t *adminTX) UpdateTree(ctx context.Context, treeID int64, updateFunc func(*trillian.Tree)) (*trillian.Tree, error) {
-	mTree := t.ms.getTree(treeID)
+	mTree, err := t.ms.getTree(treeID)
+	if err != nil {
+		return nil, err
+	}
 	mTree.mu.Lock()
 	defer mTree.mu.Unlock()
 
