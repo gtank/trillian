@@ -45,6 +45,7 @@ type tree struct {
 	currentSTH  int64 // currentSTH is the timestamp of the current STH.
 	meta        *trillian.Tree
 	kafkaOffset int64 // TODO(filippo): probably belongs on a tx?
+	//TODO(gtank): kafkaOffset should be persisted in proto if it's going to be here
 }
 
 func (t *tree) Lock() {
@@ -103,9 +104,24 @@ func (m *commitTreeStorage) getTree(id int64) (*tree, error) {
 		return nil, err
 	}
 
+	var offset int64
+	offsetMetaKey := metaKey(id, "offset").(*kv).k
+	offsetResult, err := m.hbase.QualifiedGet("subtrees", offsetMetaKey, "raw", "bytes")
+	if err != nil {
+		if err == ErrDoesNotExist {
+			offsetResult = &kv{k: offsetMetaKey, v: []byte("0")}
+		} else {
+			return nil, err
+		}
+	}
+	if err := json.Unmarshal(offsetResult.v.([]byte), &offset); err != nil {
+		return nil, err
+	}
+
 	ret := &tree{
-		store: m.hbase,
-		meta:  &meta,
+		store:       m.hbase,
+		meta:        &meta,
+		kafkaOffset: offset,
 	}
 
 	return ret, nil
