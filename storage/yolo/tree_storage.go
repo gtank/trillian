@@ -91,8 +91,8 @@ func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, cl
 
 // getTree returns the tree associated with id, or nil if no such tree exists.
 func (m *commitTreeStorage) getTree(id int64) (*tree, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// m.mu.RLock()
+	// defer m.mu.RUnlock()
 
 	treekey := metaKey(id, "tree").(*kv).k
 	treeprotobytes, err := m.hbase.QualifiedGet("subtrees", treekey, "raw", "bytes")
@@ -140,6 +140,26 @@ func (m *commitTreeStorage) getTree(id int64) (*tree, error) {
 	}
 
 	return ret, nil
+}
+
+func (m *commitTreeStorage) getKafkaOffset(id int64) (int64, error) {
+	// m.mu.RLock()
+	// defer m.mu.RUnlock()
+	tree, err := m.getTree(id)
+	if err != nil {
+		return -1, err
+	}
+	return tree.kafkaOffset, nil
+}
+
+func (m *commitTreeStorage) getCurrentSTH(id int64) (int64, error) {
+	// m.mu.RLock()
+	// defer m.mu.RUnlock()
+	tree, err := m.getTree(id)
+	if err != nil {
+		return -1, err
+	}
+	return tree.currentSTH, nil
 }
 
 // kv is a simple key->value type which implements btree's Item interface.
@@ -193,9 +213,9 @@ func (m *commitTreeStorage) beginTreeTX(ctx context.Context, readonly bool, tree
 		unlock = tree.Unlock
 	}
 	return treeTX{
-		ts:            m,
-		tx:            tree.store,
-		tree:          tree,
+		ts: m,
+		tx: tree.store,
+		// tree:          tree,
 		treeID:        treeID,
 		hashSizeBytes: hashSizeBytes,
 		subtreeCache:  cache,
@@ -205,10 +225,10 @@ func (m *commitTreeStorage) beginTreeTX(ctx context.Context, readonly bool, tree
 }
 
 type treeTX struct {
-	closed        bool
-	tx            *hbaseClient
-	ts            *commitTreeStorage
-	tree          *tree
+	closed bool
+	tx     *hbaseClient
+	ts     *commitTreeStorage
+	// tree          *tree
 	treeID        int64
 	hashSizeBytes int
 	subtreeCache  cache.SubtreeCache
@@ -329,7 +349,7 @@ func (t *treeTX) Commit() error {
 	}
 	t.closed = true
 	// update the shared view of the tree post TX:
-	t.tree.store = t.tx
+	// t.tree.store = t.tx
 	return nil
 }
 

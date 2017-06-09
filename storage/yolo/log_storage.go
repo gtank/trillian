@@ -114,14 +114,6 @@ func (t *readOnlyLogTX) Close() error {
 }
 
 func (t *readOnlyLogTX) GetActiveLogIDs(ctx context.Context) ([]int64, error) {
-	// t.ms.mu.RLock()
-	// defer t.ms.mu.RUnlock()
-
-	// ret := make([]int64, 0, len(t.ms.trees))
-	// for k := range t.ms.trees {
-	// 	ret = append(ret, k)
-	// }
-	// return ret, nil
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
@@ -213,7 +205,12 @@ func (t *logTreeTX) WriteRevision() int64 {
 func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime time.Time) ([]*trillian.LogLeaf, error) {
 	leaves := make([]*trillian.LogLeaf, 0, limit)
 
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, t.tree.kafkaOffset)
+	offset, err := t.ls.getKafkaOffset(t.treeID)
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -264,22 +261,7 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 }
 
 func (t *logTreeTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
-	// return t.ls.trees[t.treeID].kafkaOffset, nil
-	t.ls.mu.RLock()
-	defer t.ls.mu.RUnlock()
-	offsetMetaKey := metaKey(t.treeID, "offset").(*kv).k
-	offsetResult, err := t.tx.QualifiedGet("subtrees", offsetMetaKey, "raw", "bytes")
-	if err != nil {
-		if err == ErrDoesNotExist {
-			return 0, nil
-		}
-		return 0, err
-	}
-	var offset int64
-	if err := json.Unmarshal(offsetResult.v.([]byte), &offset); err != nil {
-		return 0, err
-	}
-	return offset, nil
+	return t.ls.getKafkaOffset(t.treeID)
 }
 
 func (t *logTreeTX) GetLeavesByIndex(ctx context.Context, leaves []int64) ([]*trillian.LogLeaf, error) {
@@ -331,7 +313,14 @@ func (t *logTreeTX) LatestSignedLogRoot(ctx context.Context) (trillian.SignedLog
 
 // fetchLatestRoot reads the latest SignedLogRoot from the DB and returns it.
 func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot, error) {
-	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, t.tree.currentSTH).(*kv).k, "raw", "bytes")
+	t.ls.mu.RLock()
+	defer t.ls.mu.RUnlock()
+	currentSTH, err := t.ls.getCurrentSTH(t.treeID)
+	if err != nil {
+		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+	}
+
+	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, currentSTH).(*kv).k, "raw", "bytes")
 	if err != nil {
 		// TODO YOLO
 		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
@@ -348,6 +337,9 @@ func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot
 }
 
 func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.SignedLogRoot) error {
+	t.ls.mu.Lock()
+	defer t.ls.mu.Unlock()
+
 	k := sthKey(t.treeID, root.TimestampNanos)
 	// k.(*kv).v = root
 	encoded, err := proto.Marshal(&root)
@@ -355,13 +347,20 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 		return err
 	}
 
+	currentSTH, err := t.ls.getCurrentSTH(t.treeID)
+	if err == ErrDoesNotExist {
+		currentSTH = 0
+	} else if err != nil {
+		return err
+	}
+
 	// TODO(alcutter): this breaks the transactional model
-	if root.TimestampNanos > t.tree.currentSTH {
-		t.tree.currentSTH = root.TimestampNanos
+	if root.TimestampNanos > currentSTH {
+		currentSTH = root.TimestampNanos
 	}
 
 	sthMetaKey := metaKey(t.treeID, "currentSTH").(*kv).k
-	sthBytes, err := json.Marshal(t.tree.currentSTH)
+	sthBytes, err := json.Marshal(currentSTH)
 	if err != nil {
 		return err
 	}
@@ -369,9 +368,9 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 	t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
 	t.tx.BufferedPut("subtrees", sthMetaKey, "raw", "bytes", sthBytes)
 
-	// 	if err := t.tx.Flush(); err != nil {
-	// 		return err
-	// 	}
+	if err := t.tx.Flush(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -421,7 +420,12 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		t.tx.BufferedPut("subtrees", key, "raw", "bytes", treeIDMapBytes)
 	}
 
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, t.tree.kafkaOffset)
+	kafkaOffset, err := t.ls.getKafkaOffset(t.treeID)
+	if err != nil {
+		return err
+	}
+
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, kafkaOffset)
 	defer c.Close()
 	if err != nil {
 		return err
@@ -451,9 +455,7 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return fmt.Errorf("attempted to update %d unknown leaves: %x", unknown, countByMerkleHash)
 	}
 
-	// t.tree.kafkaOffset += int64(len(leaves))
-
-	newKafkaOffset := t.tree.kafkaOffset + int64(len(leaves))
+	newKafkaOffset := kafkaOffset + int64(len(leaves))
 	offsetMetaKey := metaKey(t.treeID, "offset").(*kv).k
 	offsetBytes, err := json.Marshal(newKafkaOffset)
 	if err != nil {
@@ -464,7 +466,6 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return err
 	}
 
-	t.tree.kafkaOffset = newKafkaOffset
 	return nil
 }
 
