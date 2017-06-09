@@ -125,11 +125,10 @@ func (t *readOnlyLogTX) GetActiveLogIDs(ctx context.Context) ([]int64, error) {
 	t.ms.mu.RLock()
 	defer t.ms.mu.RUnlock()
 
-	var treeListJsonBytes *kv
 	treeListJsonBytes, err := t.ms.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
 	if err != nil {
 		if err == ErrDoesNotExist {
-			treeListJsonBytes.v = []byte("[]")
+			treeListJsonBytes = &kv{k: "/meta/tree_list", v: []byte("[]")}
 		}
 		return nil, err
 	}
@@ -462,11 +461,10 @@ func (t *logTreeTX) getActiveLogIDs(ctx context.Context) ([]int64, error) {
 	t.ls.mu.RLock()
 	defer t.ls.mu.RUnlock()
 
-	var treeListJsonBytes *kv
 	treeListJsonBytes, err := t.ls.hbase.QualifiedGet("subtrees", "/meta/tree_list", "raw", "bytes")
 	if err != nil {
 		if err == ErrDoesNotExist {
-			treeListJsonBytes.v = []byte("[]")
+			treeListJsonBytes = &kv{k: "/meta/tree_list", v: []byte("[]")}
 		}
 		return nil, err
 	}
