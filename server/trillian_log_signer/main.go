@@ -40,7 +40,8 @@ import (
 )
 
 var (
-	brokers                  = flag.String("brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
+	brokers                  = flag.String("kafka-brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
+	topics                   = flag.String("kafka-topics", os.Getenv("KAFKA_TOPICS"), "The Kafka brokers to connect to, as a comma separated list")
 	hbaseQuorum              = flag.String("hbase-quorum", "", "The ZooKeeper quorum to use for contacting HBase")
 	hbaseRoot                = flag.String("hbase-root", "/hbase/dev", "Where, in ZooKeeper, HBase metadata is stored")
 	hbaseTable               = flag.String("hbase-table", "trillian", "The name of the HBase table to use")
@@ -94,7 +95,7 @@ func main() {
 	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
 
 	if *httpEndpoint == "USE_PORT0" && os.Getenv("PORT0") != "" {
-		addr := fmt.Sprinf("0.0.0.0:%s", os.Getenv("PORT0"))
+		addr := fmt.Sprintf("0.0.0.0:%s", os.Getenv("PORT0"))
 		*httpEndpoint = addr
 	}
 
