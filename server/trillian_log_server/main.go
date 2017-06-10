@@ -73,13 +73,9 @@ func main() {
 	config.Producer.RequiredAcks = sarama.WaitForAll // Wait for all in-sync replicas to ack the message
 	config.Producer.Retry.Max = 10                   // Retry up to 10 times to produce the message
 	config.Producer.Return.Successes = true
-	producer, err := sarama.NewSyncProducer(brokerList, config)
+	kafka, err := sarama.NewClient(brokerList, config)
 	if err != nil {
-		glog.Exit("Error starting Kafka producer:", err)
-	}
-	consumer, err := sarama.NewConsumer(brokerList, nil)
-	if err != nil {
-		glog.Exit("Error starting Kafka consumer:", err)
+		glog.Exit("Error starting Kafka client:", err)
 	}
 
 	if *hbaseHost == "" {
@@ -99,7 +95,7 @@ func main() {
 		}
 	}
 
-	st := yolo.NewLogStorage(producer, consumer, hbaseClient)
+	st := yolo.NewLogStorage(kafka, hbaseClient)
 	registry := extension.Registry{
 		AdminStorage:  yolo.NewAdminStorage(st),
 		SignerFactory: keys.PEMSignerFactory{},

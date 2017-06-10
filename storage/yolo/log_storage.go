@@ -82,9 +82,9 @@ type commitLogStorage struct {
 }
 
 // NewLogStorage creates a commit log LogStorage instance.
-func NewLogStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, client gohbase.Client) storage.LogStorage {
+func NewLogStorage(kafka sarama.Client, client gohbase.Client) storage.LogStorage {
 	ret := &commitLogStorage{
-		commitTreeStorage: newTreeStorage(kafkaProd, kafkaCons, client),
+		commitTreeStorage: newTreeStorage(kafka, client),
 	}
 	ret.admin = NewAdminStorage(ret)
 	return ret
@@ -211,14 +211,18 @@ func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime tim
 		return nil, err
 	}
 
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, offset)
+	hwm, err := t.ls.kafka.GetOffset(strconv.FormatInt(t.treeID, 10), 0, sarama.OffsetNewest)
 	if err != nil {
 		return nil, err
 	}
-	available := int(c.HighWaterMarkOffset() - offset)
-	glog.Infof("DequeueLeaves: %d requested of %d avaiable (offset %d, hwm %d)", limit, available, offset, c.HighWaterMarkOffset())
+	available := int(hwm - offset)
+	glog.Infof("DequeueLeaves: %d requested of %d avaiable (offset %d, hwm %d)", limit, available, offset, hwm)
 	if available < limit {
 		limit = available
+	}
+	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, offset)
+	if err != nil {
+		return nil, err
 	}
 	defer c.Close()
 	p := c.Messages()
@@ -260,8 +264,10 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 			Value: sarama.ByteEncoder(encoded),
 		})
 		if err != nil {
+			glog.Warning("failed to send message to Kafka:", err)
 			return nil, err
 		}
+		// glog.Infof("sent message to Kafka: partition=%d, offset=%d, topic=%v", partition, offset, strconv.FormatInt(t.treeID, 10))
 	}
 	return []*trillian.LogLeaf{}, nil
 }
