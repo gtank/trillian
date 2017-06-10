@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	_ "net/http/pprof"
 	"os"
 	"strings"
@@ -87,7 +88,7 @@ func main() {
 
 	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
 
-	if *rpcEndpoint == "PORT0" && os.Getenv("PORT0") != "" {
+	if *rpcEndpoint == "PORT0" {
 		addr := fmt.Sprintf("0.0.0.0:%s", os.Getenv("PORT0"))
 		*rpcEndpoint = addr
 	}

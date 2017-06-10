@@ -94,7 +94,7 @@ func main() {
 
 	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
 
-	if *httpEndpoint == "USE_PORT0" && os.Getenv("PORT0") != "" {
+	if *httpEndpoint == "PORT0" {
 		addr := fmt.Sprintf("0.0.0.0:%s", os.Getenv("PORT0"))
 		*httpEndpoint = addr
 	}
