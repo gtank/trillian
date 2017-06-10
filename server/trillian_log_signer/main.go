@@ -93,6 +93,11 @@ func main() {
 
 	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
 
+	if *httpEndpoint == "USE_PORT0" && os.Getenv("PORT0") != "" {
+		addr := fmt.Sprinf("0.0.0.0:%s", os.Getenv("PORT0"))
+		*httpEndpoint = addr
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go util.AwaitSignal(cancel)
 
