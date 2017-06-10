@@ -46,7 +46,7 @@ var (
 	brokers      = flag.String("kafka-brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
 	topics       = flag.String("kafka-topics", os.Getenv("KAFKA_TOPICS"), "The Kafka brokers to connect to, as a comma separated list")
 	hbaseQuorum  = flag.String("hbase-quorum", "", "The ZooKeeper quorum to use for contacting HBase")
-	hbaseRoot    = flag.String("hbase-root", "/hbase/dev", "Where, in ZooKeeper, HBase metadata is stored")
+	hbaseRoot    = flag.String("hbase-root", "", "Where, in ZooKeeper, HBase metadata is stored")
 	hbaseTable   = flag.String("hbase-table", "trillian", "The name of the HBase table to use")
 	rpcEndpoint  = flag.String("rpc_endpoint", "localhost:8090", "Endpoint for RPC requests (host:port)")
 	httpEndpoint = flag.String("http_endpoint", "localhost:8091", "Endpoint for HTTP metrics and REST requests on (host:port, empty means disabled)")
@@ -86,7 +86,12 @@ func main() {
 		glog.Exit("Need to specify hbase host")
 	}
 
-	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
+	var hbaseClient gohbase.Client
+	if *hbaseRoot != "" {
+		hbaseClient = gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
+	} else {
+		hbaseClient = gohbase.NewClient(*hbaseQuorum)
+	}
 
 	if *rpcEndpoint == "PORT0" {
 		addr := fmt.Sprintf("0.0.0.0:%s", os.Getenv("PORT0"))

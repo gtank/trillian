@@ -130,13 +130,16 @@ func newRequest(opts *createOpts) (*trillian.CreateTreeRequest, error) {
 		return nil, err
 	}
 
-	hardcodedId, err := strconv.ParseInt(opts.treeId, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("invalid treeID: %v", opts.treeId)
+	var treeId int64
+	if opts.treeId != "" {
+		treeId, err = strconv.ParseInt(opts.treeId, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid treeID: %v", opts.treeId)
+		}
 	}
 
 	tree := &trillian.Tree{
-		TreeId:             hardcodedId,
+		TreeId:             treeId,
 		TreeState:          trillian.TreeState(ts),
 		TreeType:           trillian.TreeType(tt),
 		HashStrategy:       trillian.HashStrategy(hs),
