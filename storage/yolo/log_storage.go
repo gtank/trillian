@@ -203,6 +203,36 @@ func (t *logTreeTX) WriteRevision() int64 {
 	return t.treeTX.writeRevision
 }
 
+// var kafkaTopics map[int64]string
+// var topicsFlag = flag.String("kafka-topics", "", "logid:kafkatopic")
+
+func getTopic(logID int64) string {
+	if logID != 4678780013832191568 {
+		panic("unblessed log id")
+	}
+	return "contrail.certs"
+	/*
+		if kafkaTopics == nil {
+			kafkaTopics = make(map[int64]string)
+			for _, pair := range strings.Split(*topicsFlag, ",") {
+				parts := strings.Split(pair, ":")
+				if len(parts) != 2 {
+					panic("malformed kafka-topics")
+				}
+				id, err := strconv.ParseInt(parts[0], 10, 64)
+				if err != nil {
+					panic(err)
+				}
+				kafkaTopics[id] = parts[1]
+			}
+		}
+		if kafkaTopics[logID] == "" {
+			panic("unknown topic")
+		}
+		return kafkaTopics[logID]
+	*/
+}
+
 func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime time.Time) ([]*trillian.LogLeaf, error) {
 	leaves := make([]*trillian.LogLeaf, 0, limit)
 
@@ -211,7 +241,7 @@ func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime tim
 		return nil, err
 	}
 
-	hwm, err := t.ls.kafka.GetOffset(strconv.FormatInt(t.treeID, 10), 0, sarama.OffsetNewest)
+	hwm, err := t.ls.kafka.GetOffset(getTopic(t.treeID), 0, sarama.OffsetNewest)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +250,7 @@ func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime tim
 	if available < limit {
 		limit = available
 	}
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, offset)
+	c, err := t.ls.kafkaCons.ConsumePartition(getTopic(t.treeID), 0, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +290,7 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 		}
 		// TODO(filippo): batch send, annotate errors
 		_, _, err = t.ls.kafkaProd.SendMessage(&sarama.ProducerMessage{
-			Topic: strconv.FormatInt(t.treeID, 10),
+			Topic: getTopic(t.treeID),
 			Value: sarama.ByteEncoder(encoded),
 		})
 		if err != nil {
@@ -440,7 +470,7 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return err
 	}
 
-	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, kafkaOffset)
+	c, err := t.ls.kafkaCons.ConsumePartition(getTopic(t.treeID), 0, kafkaOffset)
 	defer c.Close()
 	if err != nil {
 		return err
