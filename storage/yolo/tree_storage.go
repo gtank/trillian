@@ -302,6 +302,9 @@ func (t *treeTX) storeSubtrees(ctx context.Context, subtrees []*storagepb.Subtre
 			return err
 		}
 		t.tx.BufferedPut("subtrees", key.k, "raw", "bytes", subtreeBytes)
+		// if err := t.tx.Flush(); err != nil {
+		// 	return nil
+		// }
 	}
 	return nil
 }

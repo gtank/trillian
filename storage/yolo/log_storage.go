@@ -317,20 +317,23 @@ func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot
 	defer t.ls.mu.RUnlock()
 	currentSTH, err := t.ls.getCurrentSTH(t.treeID)
 	if err != nil {
-		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		// return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		return trillian.SignedLogRoot{}, nil
 	}
 
 	r, err := t.tx.QualifiedGet("subtrees", sthKey(t.treeID, currentSTH).(*kv).k, "raw", "bytes")
 	if err != nil {
 		// TODO YOLO
-		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		// return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		return trillian.SignedLogRoot{}, nil
 	}
 
 	var root trillian.SignedLogRoot
 	err = proto.Unmarshal(r.v.([]byte), &root)
 	if err != nil {
 		// TODO YOLO
-		return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		// return trillian.SignedLogRoot{RootHash: []byte("EmptyRoot")}, nil
+		return trillian.SignedLogRoot{}, nil
 	}
 
 	return root, nil
@@ -339,13 +342,6 @@ func (t *logTreeTX) fetchLatestRoot(ctx context.Context) (trillian.SignedLogRoot
 func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.SignedLogRoot) error {
 	t.ls.mu.Lock()
 	defer t.ls.mu.Unlock()
-
-	k := sthKey(t.treeID, root.TimestampNanos)
-	// k.(*kv).v = root
-	encoded, err := proto.Marshal(&root)
-	if err != nil {
-		return err
-	}
 
 	currentSTH, err := t.ls.getCurrentSTH(t.treeID)
 	if err == ErrDoesNotExist {
@@ -359,13 +355,20 @@ func (t *logTreeTX) StoreSignedLogRoot(ctx context.Context, root trillian.Signed
 		currentSTH = root.TimestampNanos
 	}
 
+	rootKey := sthKey(t.treeID, root.TimestampNanos).(*kv).k
+	// k.(*kv).v = root
+	encoded, err := proto.Marshal(&root)
+	if err != nil {
+		return err
+	}
+
 	sthMetaKey := metaKey(t.treeID, "currentSTH").(*kv).k
 	sthBytes, err := json.Marshal(currentSTH)
 	if err != nil {
 		return err
 	}
 
-	t.tx.BufferedPut("subtrees", k.(*kv).k, "raw", "bytes", encoded)
+	t.tx.BufferedPut("subtrees", rootKey, "raw", "bytes", encoded)
 	t.tx.BufferedPut("subtrees", sthMetaKey, "raw", "bytes", sthBytes)
 
 	if err := t.tx.Flush(); err != nil {
@@ -462,6 +465,7 @@ func (t *logTreeTX) UpdateSequencedLeaves(ctx context.Context, leaves []*trillia
 		return err
 	}
 	t.tx.BufferedPut("subtrees", offsetMetaKey, "raw", "bytes", offsetBytes)
+
 	if err := t.tx.Flush(); err != nil {
 		return err
 	}
