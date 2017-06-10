@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Shopify/sarama"
+	"github.com/golang/glog"
 	"github.com/golang/protobuf/proto"
 	"github.com/google/btree"
 	"github.com/google/trillian"
@@ -213,6 +214,11 @@ func (t *logTreeTX) DequeueLeaves(ctx context.Context, limit int, cutoffTime tim
 	c, err := t.ls.kafkaCons.ConsumePartition(strconv.FormatInt(t.treeID, 10), 0, offset)
 	if err != nil {
 		return nil, err
+	}
+	available := int(c.HighWaterMarkOffset() - offset)
+	glog.Infof("DequeueLeaves: %d requested of %d avaiable (offset %d, hwm %d)", limit, available, offset, c.HighWaterMarkOffset())
+	if available < limit {
+		limit = available
 	}
 	defer c.Close()
 	p := c.Messages()

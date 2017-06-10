@@ -74,8 +74,9 @@ type consumerMock struct {
 }
 
 type partConsMock struct {
-	cm     *consumerMock
-	offset int64
+	cm        *consumerMock
+	offset    int64
+	closeChan chan struct{}
 }
 
 func (c *consumerMock) addMessage(val []byte) error {
@@ -90,11 +91,6 @@ func (*consumerMock) Partitions(topic string) ([]int32, error)   { panic("unimpl
 func (*consumerMock) HighWaterMarks() map[string]map[int32]int64 { panic("unimplemented") }
 func (*consumerMock) Close() error                               { return nil }
 
-func (partConsMock) Close() error                         { return nil }
-func (partConsMock) AsyncClose()                          { return }
-func (partConsMock) HighWaterMarkOffset() int64           { panic("unimplemented") }
-func (partConsMock) Errors() <-chan *sarama.ConsumerError { panic("unimplemented") }
-
 func (c *consumerMock) ConsumePartition(topic string, partition int32, offset int64) (
 	sarama.PartitionConsumer, error) {
 	if c.name == "" {
@@ -103,23 +99,42 @@ func (c *consumerMock) ConsumePartition(topic string, partition int32, offset in
 	if topic != c.name || partition != 0 {
 		panic("consumerMock: invalid ConsumePartition call")
 	}
-	return partConsMock{c, offset}, nil
+	return &partConsMock{c, offset, make(chan struct{})}, nil
 }
 
-func (p partConsMock) Messages() <-chan *sarama.ConsumerMessage {
+func (p *partConsMock) HighWaterMarkOffset() int64 {
+	p.cm.RLock()
+	defer p.cm.RUnlock()
+	return int64(len(p.cm.topic))
+}
+
+func (p *partConsMock) Close() error {
+	close(p.closeChan)
+	return nil
+}
+
+func (*partConsMock) AsyncClose()                          { return }
+func (*partConsMock) Errors() <-chan *sarama.ConsumerError { panic("unimplemented") }
+
+func (p *partConsMock) Messages() <-chan *sarama.ConsumerMessage {
 	c := make(chan *sarama.ConsumerMessage)
 	go func() {
 		p.cm.RLock()
 		topic := p.cm.topic
 		p.cm.RUnlock()
 		for offset, val := range topic[p.offset:] {
-			c <- &sarama.ConsumerMessage{
+			select {
+			case <-p.closeChan:
+				break
+			case c <- &sarama.ConsumerMessage{
 				Value:     val,
 				Topic:     p.cm.name,
 				Partition: 0,
-				Offset:    int64(offset),
+				Offset:    int64(p.offset + int64(offset)),
+			}:
 			}
 		}
+		<-p.closeChan
 		close(c)
 	}()
 	return c
