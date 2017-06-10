@@ -64,7 +64,7 @@ func DefaultTestParameters(treeID int64) TestParameters {
 		queueBatchSize:      50,
 		sequencerBatchSize:  100,
 		readBatchSize:       50,
-		sequencingWaitTotal: time.Second * 30,
+		sequencingWaitTotal: time.Second * 60,
 		sequencingPollWait:  time.Second * 5,
 		rpcRequestDeadline:  time.Second * 10,
 		customLeafPrefix:    "",

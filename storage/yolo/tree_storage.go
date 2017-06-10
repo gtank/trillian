@@ -77,14 +77,24 @@ type commitTreeStorage struct {
 	// trees     map[int64]*tree
 	kafkaProd sarama.SyncProducer
 	kafkaCons sarama.Consumer
+	kafka     sarama.Client
 	hbase     *hbaseClient
 }
 
-func newTreeStorage(kafkaProd sarama.SyncProducer, kafkaCons sarama.Consumer, client gohbase.Client) *commitTreeStorage {
+func newTreeStorage(kafka sarama.Client, client gohbase.Client) *commitTreeStorage {
+	kafkaProd, err := sarama.NewSyncProducerFromClient(kafka)
+	if err != nil {
+		glog.Exit("NewSyncProducerFromClient", err)
+	}
+	kafkaCons, err := sarama.NewConsumerFromClient(kafka)
+	if err != nil {
+		glog.Exit("NewConsumerFromClient", err)
+	}
 	return &commitTreeStorage{
 		// trees:     make(map[int64]*tree),
 		kafkaProd: kafkaProd,
 		kafkaCons: kafkaCons,
+		kafka:     kafka,
 		hbase:     newHBaseClient(client),
 	}
 }
