@@ -154,9 +154,16 @@ func (t *adminTX) CreateTree(ctx context.Context, tr *trillian.Tree) (*trillian.
 		return nil, err
 	}
 
-	id, err := storage.NewTreeID()
-	if err != nil {
-		return nil, err
+	// TODO(gtank): If the tree has already been assigned an ID, use it.
+	var id int64
+	if tr.TreeId == 0 {
+		newTreeID, err := storage.NewTreeID()
+		if err != nil {
+			return nil, err
+		}
+		id = newTreeID
+	} else {
+		id = tr.TreeId
 	}
 
 	nowMillis := toMillisSinceEpoch(time.Now())
