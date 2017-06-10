@@ -41,7 +41,9 @@ import (
 
 var (
 	brokers                  = flag.String("brokers", os.Getenv("KAFKA_PEERS"), "The Kafka brokers to connect to, as a comma separated list")
-	hbaseHost                = flag.String("hbase", "", "The HBase host to connect to")
+	hbaseQuorum              = flag.String("hbase-quorum", "", "The ZooKeeper quorum to use for contacting HBase")
+	hbaseRoot                = flag.String("hbase-root", "/hbase/dev", "Where, in ZooKeeper, HBase metadata is stored")
+	hbaseTable               = flag.String("hbase-table", "trillian", "The name of the HBase table to use")
 	httpEndpoint             = flag.String("http_endpoint", "localhost:8091", "Endpoint for HTTP (host:port, empty means disabled)")
 	sequencerIntervalFlag    = flag.Duration("sequencer_interval", time.Second*10, "Time between each sequencing pass through all logs")
 	batchSizeFlag            = flag.Int("batch_size", 50, "Max number of leaves to process per batch")
@@ -85,10 +87,11 @@ func main() {
 		glog.Exit("Error starting Kafka client:", err)
 	}
 
-	if *hbaseHost == "" {
+	if *hbaseQuorum == "" {
 		glog.Exit("Need to specify hbase host")
 	}
-	hbaseClient := gohbase.NewClient(*hbaseHost)
+
+	hbaseClient := gohbase.NewClient(*hbaseQuorum, gohbase.ZookeeperRoot(*hbaseRoot))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go util.AwaitSignal(cancel)
