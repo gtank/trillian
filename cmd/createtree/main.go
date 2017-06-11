@@ -91,12 +91,7 @@ func createTree(ctx context.Context, opts *createOpts) (*trillian.Tree, error) {
 	// If admin_server points to a SRV record, resolve it now.
 	// Assume it's a SRV if there's no port specified.
 	if strings.Index(opts.addr, ":") == -1 {
-		// Expected format is _service._proto.the.name.can.be.long
-		parts := strings.SplitN(opts.addr, ".", 3)
-		if len(parts) != 3 {
-			glog.Exitf("Invalid SRV backend flag: %v", opts.addr)
-		}
-		_, srvRecords, err := net.LookupSRV(parts[0], parts[1], parts[2])
+		_, srvRecords, err := net.LookupSRV("", "", opts.addr)
 		if err != nil {
 			glog.Exitf("Failed SRV lookup for backend: %v", err)
 		}
