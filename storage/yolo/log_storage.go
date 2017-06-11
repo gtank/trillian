@@ -299,7 +299,8 @@ func (t *logTreeTX) QueueLeaves(ctx context.Context, leaves []*trillian.LogLeaf,
 		}
 		// glog.Infof("sent message to Kafka: partition=%d, offset=%d, topic=%v", partition, offset, strconv.FormatInt(t.treeID, 10))
 	}
-	return []*trillian.LogLeaf{}, nil
+	// TODO(gtank): filter leaves for duplicates, etc
+	return leaves, nil
 }
 
 func (t *logTreeTX) GetSequencedLeafCount(ctx context.Context) (int64, error) {
